@@ -1,0 +1,169 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Usuario {
+  id                String                 @id @default(uuid())
+  correo            String                 @unique
+  claveHash         String
+  rol               String
+  nombre            String
+  creadoEn          DateTime               @default(now())
+  transacciones     HistorialTransaccion[]
+  InventarioBooster InventarioBooster[]
+  NivelCompletado   NivelCompletado[]
+  partidas          Partida[]
+  progreso          Progreso?
+}
+
+model Progreso {
+  id              String   @id @default(uuid())
+  usuarioId       String   @unique
+  highestUnlocked Int      @default(1)
+  completed       Int[]    @default([])
+  coins           Int      @default(0)
+  diamonds        Int      @default(0)
+  wins            Int      @default(0)
+  boosters        Json     @default("{\"1\": 0, \"2\": 0, \"3\": 0, \"4\": 0}")
+  actualizadoEn   DateTime @updatedAt
+  usuario         Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+}
+
+model Partida {
+  id        String   @id @default(uuid())
+  usuarioId String
+  nivel     Int
+  gano      Boolean
+  creadoEn  DateTime @default(now())
+  Nivel     Nivel    @relation(fields: [nivel], references: [numero])
+  usuario   Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+}
+
+/// Libro de compras, intercambios y recompensas. El saldo vive en Progreso.
+model HistorialTransaccion {
+  id               String   @id @default(uuid())
+  usuarioId        String
+  tipo             String
+  deltaMonedas     Int
+  deltaDiamantes   Int
+  monedasDespues   Int
+  diamantesDespues Int
+  detalle          String
+  creadoEn         DateTime @default(now())
+  usuario          Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@index([usuarioId, creadoEn])
+}
+
+model CodigoVerificacion {
+  id         String   @id @default(uuid())
+  correo     String
+  codigoHash String
+  expiraEn   DateTime
+  usado      Boolean  @default(false)
+  creadoEn   DateTime @default(now())
+
+  @@index([correo, usado])
+}
+
+model Booster {
+  id                Int                 @id
+  nombre            String
+  descripcion       String
+  precio            Int
+  moneda            String
+  icono             String
+  duracionSeg       Int
+  recargaSeg        Int
+  InventarioBooster InventarioBooster[]
+}
+
+model FaseNivel {
+  id          String       @id
+  nivelNumero Int
+  orden       Int
+  tamano      Int
+  maxNumero   Int
+  cartones    Int
+  intervaloMs Int
+  evento      String
+  oscuridad   Boolean
+  pista       String
+  Nivel       Nivel        @relation(fields: [nivelNumero], references: [numero])
+  FasePatron  FasePatron[]
+
+  @@unique([nivelNumero, orden])
+}
+
+model FasePatron {
+  faseId         String
+  patronCodigo   String
+  FaseNivel      FaseNivel      @relation(fields: [faseId], references: [id], onDelete: Cascade)
+  PatronVictoria PatronVictoria @relation(fields: [patronCodigo], references: [codigo])
+
+  @@id([faseId, patronCodigo])
+}
+
+model InventarioBooster {
+  usuarioId String
+  boosterId Int
+  cantidad  Int     @default(0)
+  Booster   Booster @relation(fields: [boosterId], references: [id])
+  Usuario   Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@id([usuarioId, boosterId])
+}
+
+model Nivel {
+  numero              Int               @id
+  claveSesion         String
+  pista               String
+  muestraJefe         Boolean
+  fondo               String
+  monedasPrimeraVez   Int
+  monedasRepeticion   Int
+  diamantesPrimeraVez Int
+  reaccionBaseMs      Int
+  jitterMs            Int
+  probabilidadFallo   Float
+  apuntaAlPatron      Boolean
+  FaseNivel           FaseNivel[]
+  NivelCompletado     NivelCompletado[]
+  Partida             Partida[]
+}
+
+model NivelCompletado {
+  usuarioId   String
+  nivelNumero Int
+  Nivel       Nivel   @relation(fields: [nivelNumero], references: [numero])
+  Usuario     Usuario @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@id([usuarioId, nivelNumero])
+}
+
+model PatronVictoria {
+  codigo     String       @id
+  nombre     String
+  FasePatron FasePatron[]
+}
+
+model ReglaTienda {
+  id                 Int @id
+  monedasPorDiamante Int
+  diamantesPorCambio Int
+  vidaCodigoMinutos  Int
+}
+
+model Rival {
+  codigo        String @id
+  nombre        String
+  lado          String
+  multVelocidad Float
+  multFallo     Float
+  orden         Int
+}
