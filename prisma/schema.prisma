@@ -1,10 +1,10 @@
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model Usuario {
@@ -18,6 +18,7 @@ model Usuario {
   InventarioBooster InventarioBooster[]
   NivelCompletado   NivelCompletado[]
   partidas          Partida[]
+  participaciones   ParticipacionOnline[]
   progreso          Progreso?
 }
 
@@ -166,4 +167,33 @@ model Rival {
   multVelocidad Float
   multFallo     Float
   orden         Int
+}
+
+/// Partida del modo online (bingo multijugador). Distinta de `Partida` (campaña).
+model PartidaOnline {
+  id            String                @id @default(uuid())
+  ganadorId     String?
+  ganadorNombre String?
+  tamano        Int
+  modosVictoria String[]
+  duracionSeg   Int
+  creadoEn      DateTime              @default(now())
+  Participacion ParticipacionOnline[]
+
+  @@index([creadoEn])
+}
+
+model ParticipacionOnline {
+  id        String        @id @default(uuid())
+  partidaId String
+  usuarioId String?
+  nombre    String
+  esBot     Boolean       @default(false)
+  gano      Boolean       @default(false)
+  carton    Json
+  partida   PartidaOnline @relation(fields: [partidaId], references: [id], onDelete: Cascade)
+  usuario   Usuario?      @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+
+  @@index([usuarioId])
+  @@index([partidaId])
 }

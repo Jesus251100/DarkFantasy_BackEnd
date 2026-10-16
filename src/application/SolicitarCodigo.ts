@@ -54,7 +54,6 @@ export class SolicitarCodigo {
     }
 
     ultimaSolicitud.set(correo, ahora)
-    console.log(`[verificación] correo enviado a ${correo}`)
     return { bandeja: this.correo.bandejaLocal() }
   }
 }

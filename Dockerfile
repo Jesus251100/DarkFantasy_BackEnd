@@ -6,9 +6,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
+COPY prisma.config.ts ./
+COPY prisma ./prisma
 RUN npm ci
 
-COPY prisma ./prisma
 COPY tsconfig.json ./
 COPY src ./src
 
@@ -16,4 +17,4 @@ RUN npx prisma generate
 
 EXPOSE 3001
 
-CMD ["sh", "-c", "i=0; until npx prisma db push --skip-generate; do i=$((i+1)); if [ \"$i\" -ge 30 ]; then echo 'PostgreSQL no respondió'; exit 1; fi; echo \"Esperando PostgreSQL... ($i)\"; sleep 2; done; npx tsx prisma/seed.ts && npm start"]
+CMD ["sh", "-c", "npx prisma generate; i=0; until npx prisma db push; do i=$((i+1)); if [ \"$i\" -ge 30 ]; then echo 'PostgreSQL no respondió'; exit 1; fi; echo \"Esperando PostgreSQL... ($i)\"; sleep 2; done; npx tsx prisma/seed.ts && npm start"]

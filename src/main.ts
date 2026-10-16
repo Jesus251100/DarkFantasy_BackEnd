@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { createServer } from 'node:http'
 import cors from 'cors'
 import express from 'express'
 import { aplicarIntegridad } from './infrastructure/aplicarIntegridad'
@@ -7,8 +8,10 @@ import { resumenConexion } from './infrastructure/conexionBd'
 import rutasAuth from './http/rutasAuth'
 import rutasCampania from './http/rutasCampania'
 import rutasAdmin from './http/rutasAdmin'
+import { montarOnline } from './http/socketOnline'
 
 const app = express()
+const servidor = createServer(app)
 const port = Number(process.env.PORT ?? 3001)
 
 app.use(
@@ -64,7 +67,9 @@ app.use('/api/auth', rutasAuth)
 app.use('/api/campania', rutasCampania)
 app.use('/api/admin', rutasAdmin)
 
-app.listen(port, '0.0.0.0', () => {
+montarOnline(servidor)
+
+servidor.listen(port, '0.0.0.0', () => {
   console.log(`API Dark Fantasy en http://0.0.0.0:${port}`)
   console.log(`PostgreSQL: ${resumenConexion()}`)
   void aplicarIntegridad(prisma)

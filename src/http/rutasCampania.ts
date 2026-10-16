@@ -4,6 +4,7 @@ import { ActualizarNombre } from '../application/ActualizarNombre'
 import { CompletarNivel } from '../application/CompletarNivel'
 import { ComprarBoosterRemoto } from '../application/ComprarBoosterRemoto'
 import { IntercambiarMonedaRemoto } from '../application/IntercambiarMonedaRemoto'
+import { ListarLogros } from '../application/ListarLogros'
 import { ObtenerCampania } from '../application/ObtenerCampania'
 import { RegistrarPartida } from '../application/RegistrarPartida'
 import { PrismaCampaniaRepo } from '../infrastructure/PrismaCampaniaRepo'
@@ -31,6 +32,15 @@ router.get('/', async (req, res) => {
     },
     campania,
   })
+})
+
+router.get('/logros', async (req, res) => {
+  const logros = await new ListarLogros(campanias).ejecutar(req.usuario!.sub)
+  if (!logros) {
+    res.status(404).json({ error: 'Usuario no encontrado.' })
+    return
+  }
+  res.json({ logros })
 })
 
 router.post('/completar-nivel', async (req, res) => {

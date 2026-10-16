@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client'
+import type { PrismaClient } from '../generated/prisma/client'
 import type { DatosPartida, IRegistroPartidas } from '../domain/partida/IRegistroPartidas'
 import { prisma } from './prisma'
 

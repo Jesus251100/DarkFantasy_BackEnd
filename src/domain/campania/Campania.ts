@@ -1,11 +1,21 @@
 import { Jugador } from './Jugador'
 import { Recompensa } from './Recompensa'
+import { logroDeNivel } from '../logros/Logros'
 import {
   MAX_LEVEL,
   campaniaVacia,
   type DatosCampania,
   type IRepositorioCampania,
 } from './IRepositorioCampania'
+
+export interface LogroDesbloqueado {
+  nivel: number
+  codigo: string
+  nombre: string
+  imagen: string
+  monedas: number
+  diamantes: number
+}
 
 export interface ResultadoClear {
   level: number
@@ -14,6 +24,7 @@ export interface ResultadoClear {
   diamonds: number
   unlockedNext: number | null
   hint: string
+  logro: LogroDesbloqueado | null
 }
 
 /** Progreso de la campaña. Depende de IRepositorioCampania (D de SOLID). */
@@ -68,6 +79,7 @@ export class Campania {
       diamonds: 0,
       unlockedNext: null,
       hint: '',
+      logro: null,
     }
     if (level < 1 || level > MAX_LEVEL) return blank
 
@@ -84,26 +96,38 @@ export class Campania {
         diamonds: 0,
         unlockedNext: null,
         hint: `+${extra.monedas} 🪙 (repetición)`,
+        logro: null,
       }
     }
 
     this.completed = [...this.completed, level].sort((a, b) => a - b)
     const reward = Recompensa.deNivel(level)
+    const logro = logroDeNivel(level) ?? null
+    const bono = Recompensa.deLogroNivel(level)
     reward.aplicar(this.jugador)
+    bono.aplicar(this.jugador)
+
+    const coins = reward.monedas + bono.monedas
+    const diamonds = reward.diamantes + bono.diamantes
 
     const unlockedNext = level < MAX_LEVEL ? level + 1 : null
     if (unlockedNext) {
       this.highestUnlocked = Math.max(this.highestUnlocked, unlockedNext)
     }
 
+    const total = new Recompensa(coins, diamonds)
+    const partes = [total.texto(unlockedNext, level, MAX_LEVEL)]
+    if (logro) partes.push(`Logro: ${logro.nombre}`)
+
     this.persistir()
     return {
       level,
       firstClear: true,
-      coins: reward.monedas,
-      diamonds: reward.diamantes,
+      coins,
+      diamonds,
       unlockedNext,
-      hint: reward.texto(unlockedNext, level, MAX_LEVEL),
+      hint: partes.filter(Boolean).join(' · '),
+      logro,
     }
   }
 

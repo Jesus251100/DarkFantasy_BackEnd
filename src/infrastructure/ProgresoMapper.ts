@@ -1,4 +1,4 @@
-import type { Progreso } from '@prisma/client'
+import type { Progreso } from '../generated/prisma/client'
 import { campaniaVacia, type DatosCampania } from '../domain/campania/IRepositorioCampania'
 import type { StockBoosters } from '../domain/campania/Jugador'
 

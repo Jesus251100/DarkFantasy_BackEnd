@@ -1,3 +1,4 @@
+import { logroDeNivel } from '../logros/Logros'
 import type { Jugador } from './Jugador'
 
 export const COIN_REWARD: Record<number, number> = {
@@ -25,6 +26,12 @@ export class Recompensa {
 
   static deRepeticion(level: number): Recompensa {
     return new Recompensa(coinsPorRepeticion(level), 0)
+  }
+
+  /** Recompensa extra que trae el logro de completar el nivel. */
+  static deLogroNivel(level: number): Recompensa {
+    const logro = logroDeNivel(level)
+    return new Recompensa(logro?.monedas ?? 0, logro?.diamantes ?? 0)
   }
 
   aplicar(jugador: Jugador): void {

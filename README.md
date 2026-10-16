@@ -1,6 +1,6 @@
 # Dark Fantasy — Backend
 
-API REST del juego, construida con **Express 5 + TypeScript** y persistencia en **PostgreSQL** vía **Prisma 6**. Las reglas de campaña, tienda y boosters son las mismas clases del dominio del frontend (POO + SOLID).
+API REST del juego, construida con **Express 5 + TypeScript** y persistencia en **PostgreSQL** vía **Prisma 7**. Las reglas de campaña, tienda y boosters son las mismas clases del dominio del frontend (POO + SOLID).
 
 Sirve a la SPA del frontend (`../frontend`) en la ruta base `/api`.
 
@@ -8,10 +8,28 @@ Sirve a la SPA del frontend (`../frontend`) en la ruta base `/api`.
 
 - Node.js + TypeScript (ejecutado con `tsx`)
 - Express 5
-- Prisma 6 + PostgreSQL 16
+- Prisma 7 + PostgreSQL 16
 - JWT (`jsonwebtoken`) + bcrypt (`bcryptjs`)
 - Zod (validación de entrada)
 - Nodemailer / SMTP (códigos de verificación)
+
+### Versiones
+
+| Paquete | Versión |
+| --- | --- |
+| express | 5.3.0 |
+| @prisma/client | 7.10.1 |
+| prisma (CLI) | 7.10.1 |
+| @prisma/adapter-pg | 7.10.1 |
+| socket.io | 4.8.4 |
+| zod | 4.6.7 |
+| jsonwebtoken | 9.0.3 |
+| bcryptjs | 3.0.3 |
+| nodemailer | 10.1.1 |
+| cors | 2.8.6 |
+| dotenv | 18.0.8 |
+| tsx | 4.23.15 |
+| typescript | 5.9.3 |
 
 Node: `^20.19.0 || >=22.12.0`.
 
@@ -20,14 +38,16 @@ Node: `^20.19.0 || >=22.12.0`.
 ```
 backend/
 ├── src/
-│   ├── domain/          entidades y puertos (interfaces de repositorio)
-│   ├── application/     casos de uso (registro, partidas, campaña, admin)
+│   ├── domain/          entidades y puertos (incluye online/, logros/ y bingo/)
+│   ├── application/     casos de uso (registro, partidas, campaña, admin, GestionSalas)
 │   ├── infrastructure/  repositorios Prisma, correo SMTP, conexión a BD
-│   ├── http/            routers Express + middleware JWT
-│   └── main.ts          app Express, rutas /api/* y /api/salud
+│   ├── generated/       cliente Prisma 7 generado (no versionado)
+│   ├── http/            routers Express, middleware JWT y socketOnline.ts
+│   └── main.ts          app Express, rutas /api/*, /api/salud y Socket.IO
 ├── prisma/
 │   ├── schema.prisma    modelo de datos
 │   └── seed.ts          datos iniciales (usuarios, niveles, boosters…)
+├── prisma.config.ts     configuración de Prisma 7 (datasource + seed)
 ├── Dockerfile
 └── .env
 ```
@@ -39,13 +59,20 @@ Arquitectura por capas: `domain` (reglas puras + puertos) → `application` (cas
 Todos se ejecutan dentro de `backend/`:
 
 ```sh
-npm install          # instalar dependencias
+npm install          # instalar dependencias (postinstall genera el cliente Prisma)
 npm run dev          # servidor con recarga (tsx watch src/main.ts) en :3001
 npm start            # servidor sin watch
-npm run prisma:generate
+npm run prisma:generate  # genera el cliente en src/generated/prisma
 npm run prisma:migrate   # prisma migrate dev --name init
 npm run prisma:seed      # carga los datos iniciales
 ```
+
+> **Prisma 7**: el cliente ya **no** se genera dentro de `node_modules` ni se auto-genera al hacer
+> `db push`/`migrate`. `npm install` ejecuta `prisma generate` vía `postinstall`; si lo necesitas de
+> forma manual usa `npm run prisma:generate` (salida en `src/generated/prisma`, importada como
+> `../generated/prisma/client`). Siembra de forma explícita con
+> `npx prisma db seed` o `npx tsx prisma/seed.ts`. La `DATABASE_URL` y el seed se configuran en
+> `prisma.config.ts`; la conexión usa el driver adapter `@prisma/adapter-pg`.
 
 Health check: `GET http://127.0.0.1:3001/api/salud`.
 
@@ -92,6 +119,7 @@ Base: `/api`.
 ### Campaña — `/api/campania` (requiere token)
 
 - `GET /` — estado de la campaña del jugador.
+- `GET /logros` — catálogo de logros (niveles 1-10) con su estado real (desbloqueado/bloqueado).
 - `POST /completar-nivel` — `{ nivel }`. Otorga recompensas y desbloquea el siguiente.
 - `POST /comprar-booster` — `{ id, cantidad }`.
 - `POST /intercambiar` — `{ modo: "diamonds-to-coins" | "coins-to-diamonds" }`.
@@ -105,6 +133,23 @@ Base: `/api`.
 - `GET /usuarios` — listado de usuarios.
 - `GET /actividad` — actividad reciente.
 - `GET /reportes` — reportes agregados.
+
+## Modo online (Socket.IO)
+
+El bingo multijugador en tiempo real usa **Socket.IO** sobre el mismo servidor HTTP (`src/http/socketOnline.ts`). El handshake exige `auth.token` (JWT); sin él la conexión se rechaza. `GestionSalas` empareja jugadores de la cola (completando con bots) y `SalaOnline` mantiene el estado puro de cada partida.
+
+Eventos del cliente → servidor:
+
+- `queue:join` / `queue:leave` — entrar o salir de la cola de emparejamiento.
+- `game:claim` — reclamar bingo (validado en el servidor).
+
+Eventos servidor → cliente:
+
+- `online:ready` — sesión aceptada.
+- `match:found`, `room:state` — emparejamiento y vista de la sala del jugador.
+- `ball:called` — número cantado.
+- `game:over`, `game:summary` — fin de partida (vista final y resumen con ganador).
+- `claim:rejected`, `queue:warning`, `queue:joined`, `queue:left`.
 
 ## Autenticación
 
@@ -143,6 +188,7 @@ docker start darkfantasy-pg
 
 ```sh
 npm install
+npx prisma generate   # imprescindible: genera el cliente (si falta, PrismaClient no existe)
 npx prisma db push
 npx tsx prisma/seed.ts
 npm run dev
