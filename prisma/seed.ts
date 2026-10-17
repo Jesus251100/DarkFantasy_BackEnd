@@ -36,6 +36,21 @@ async function upsertNiveles() {
   console.log(`Niveles cargados: 1-${MAX_LEVEL}`)
 }
 
+/** Inicializa las reglas de la tienda necesarias en Supabase (id = 1). */
+async function upsertReglaTienda() {
+  await prisma.reglaTienda.upsert({
+    where: { id: 1 },
+    update: {},
+    create: {
+      id: 1,
+      monedasPorDiamante: 100,
+      diamantesPorCambio: 10,
+      vidaCodigoMinutos: 15,
+    },
+  })
+  console.log('Reglas de la tienda inicializadas (id = 1).')
+}
+
 async function upsertUser(
   correo: string,
   clave: string,
@@ -73,6 +88,7 @@ async function main() {
   await upsertUser('admin@darkfantasy.local', 'admin123', 'administrador', 'Admin', 10)
   await upsertUser('admin@darkfantasy.com', 'admin123', 'administrador', 'Admin', 10)
   await upsertNiveles()
+  await upsertReglaTienda()
   console.log('Usuarios de prueba:')
   console.log('  jugador@darkfantasy.local / jugador123')
   console.log('  jugador@darkfantasy.com / jugador123')

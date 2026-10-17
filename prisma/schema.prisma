@@ -7,6 +7,7 @@ datasource db {
   provider = "postgresql"
 }
 
+
 model Usuario {
   id                String                 @id @default(uuid())
   correo            String                 @unique
