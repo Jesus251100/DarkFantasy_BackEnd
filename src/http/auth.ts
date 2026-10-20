@@ -6,6 +6,9 @@ export type JwtPayload = {
   correo: string
   rol: 'jugador' | 'administrador'
   nombre: string
+  nacionalidad?: string | null
+  genero?: string | null
+  fechaNacimiento?: Date | null
 }
 
 const secret = () => process.env.JWT_SECRET ?? 'darkfantasy-dev'

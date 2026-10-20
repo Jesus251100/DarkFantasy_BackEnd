@@ -23,9 +23,13 @@ const solicitarSchema = z.object({
 
 const registroSchema = z.object({
   correo: correoSchema,
+  confirmarCorreo: correoSchema,
   clave: z.string().min(4),
   codigo: z.string().regex(/^\d{6}$/),
   nombre: z.string().min(1).max(40).optional(),
+  nacionalidad: z.string().optional(),
+  genero: z.enum(['M', 'F']).optional(),
+  fechaNacimiento: z.string().optional(),
   rol: z.enum(['jugador', 'administrador']).optional(),
 })
 
@@ -58,6 +62,11 @@ router.post('/register', async (req, res) => {
     return
   }
   const correo = parsed.data.correo.trim().toLowerCase()
+  const confirmarCorreo = parsed.data.confirmarCorreo.trim().toLowerCase()
+  if (correo !== confirmarCorreo) {
+    res.status(400).json({ error: 'Los correos no coinciden.' })
+    return
+  }
   const existe = await prisma.usuario.findUnique({ where: { correo } })
   if (existe) {
     res.status(409).json({ error: 'Ese correo ya está registrado.' })
@@ -76,6 +85,9 @@ router.post('/register', async (req, res) => {
       claveHash: await bcrypt.hash(parsed.data.clave, 10),
       rol,
       nombre,
+      nacionalidad: parsed.data.nacionalidad ?? null,
+      genero: parsed.data.genero ?? null,
+      fechaNacimiento: parsed.data.fechaNacimiento ? new Date(parsed.data.fechaNacimiento) : null,
       progreso: { create: {} },
     },
   })
@@ -84,10 +96,21 @@ router.post('/register', async (req, res) => {
     correo: usuario.correo,
     rol: usuario.rol as 'jugador' | 'administrador',
     nombre: usuario.nombre,
+    nacionalidad: usuario.nacionalidad ?? undefined,
+    genero: usuario.genero ?? undefined,
+    fechaNacimiento: usuario.fechaNacimiento ?? undefined,
   })
   res.status(201).json({
     token,
-    usuario: { id: usuario.id, correo: usuario.correo, rol: usuario.rol, nombre: usuario.nombre },
+    usuario: {
+      id: usuario.id,
+      correo: usuario.correo,
+      rol: usuario.rol,
+      nombre: usuario.nombre,
+      nacionalidad: usuario.nacionalidad,
+      genero: usuario.genero,
+      fechaNacimiento: usuario.fechaNacimiento,
+    },
   })
 })
 
@@ -117,10 +140,21 @@ router.post('/login', async (req, res) => {
     correo: usuario.correo,
     rol: usuario.rol as 'jugador' | 'administrador',
     nombre: usuario.nombre,
+    nacionalidad: usuario.nacionalidad ?? undefined,
+    genero: usuario.genero ?? undefined,
+    fechaNacimiento: usuario.fechaNacimiento ?? undefined,
   })
   res.json({
     token,
-    usuario: { id: usuario.id, correo: usuario.correo, rol: usuario.rol, nombre: usuario.nombre },
+    usuario: {
+      id: usuario.id,
+      correo: usuario.correo,
+      rol: usuario.rol,
+      nombre: usuario.nombre,
+      nacionalidad: usuario.nacionalidad,
+      genero: usuario.genero,
+      fechaNacimiento: usuario.fechaNacimiento,
+    },
   })
 })
 
@@ -132,7 +166,15 @@ router.get('/me', authObligatoria, async (req, res) => {
   }
   const campania = await new ObtenerCampania(new PrismaCampaniaRepo()).ejecutar(usuario.id)
   res.json({
-    usuario: { id: usuario.id, correo: usuario.correo, rol: usuario.rol, nombre: usuario.nombre },
+    usuario: {
+      id: usuario.id,
+      correo: usuario.correo,
+      rol: usuario.rol,
+      nombre: usuario.nombre,
+      nacionalidad: usuario.nacionalidad,
+      genero: usuario.genero,
+      fechaNacimiento: usuario.fechaNacimiento,
+    },
     campania,
   })
 })
