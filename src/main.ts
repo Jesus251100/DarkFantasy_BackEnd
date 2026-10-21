@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { createServer } from 'node:http'
 import cors from 'cors'
 import express from 'express'
+import { aplicarDisparadores } from './infrastructure/aplicarDisparadores'
 import { aplicarIntegridad } from './infrastructure/aplicarIntegridad'
 import { prisma } from './infrastructure/prisma'
 import { resumenConexion } from './infrastructure/conexionBd'
@@ -73,10 +74,14 @@ servidor.listen(port, '0.0.0.0', () => {
   console.log(`API Dark Fantasy en http://0.0.0.0:${port}`)
   console.log(`PostgreSQL: ${resumenConexion()}`)
   void aplicarIntegridad(prisma)
-    .then(() => console.log('Restricciones activas: saldo, nivel y rol no aceptan datos inválidos.'))
+    .then(() => {
+      console.log('Restricciones activas: saldo, nivel y rol no aceptan datos inválidos.')
+      return aplicarDisparadores(prisma)
+    })
+    .then(() => console.log('Disparadores activos: código, victoria, alcancía, recibo y mochila.'))
     .catch((error: unknown) => {
       const mensaje = error instanceof Error ? error.message : 'error desconocido'
-      console.error(`No se pudieron aplicar las restricciones: ${mensaje}`)
+      console.error(`No se pudieron aplicar las restricciones o los disparadores: ${mensaje}`)
     })
   const smtpUser = process.env.SMTP_USER?.trim()
   const smtpPass = (process.env.SMTP_PASS ?? '').trim()

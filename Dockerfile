@@ -12,6 +12,7 @@ RUN npm ci
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY sql ./sql
 
 RUN npx prisma generate
 
