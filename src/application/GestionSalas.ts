@@ -99,6 +99,14 @@ export class GestionSalas {
     return salaId ? (this.salas.get(salaId) ?? null) : null
   }
 
+  /** Abre una sala con estos jugadores y completa los puestos con bots. */
+  iniciarSala(miembros: MiembroCola[]): void {
+    const vivos = miembros.filter((m) => m.usuarioId && m.socketId)
+    if (vivos.length === 0) return
+    for (const miembro of vivos) this.abandonar(miembro.usuarioId)
+    this.crearSala(vivos, true)
+  }
+
   vistaDe(usuarioId: string): VistaSala | null {
     return this.salaDe(usuarioId)?.vistaPara(usuarioId) ?? null
   }
@@ -158,8 +166,8 @@ export class GestionSalas {
       }
     }
     this.salas.set(sala.id, sala)
-    this.oyente.onEmparejar(sala, humanos)
     sala.iniciar()
+    this.oyente.onEmparejar(sala, humanos)
     this.programarCanto(sala, sala.config.revealDelayMs)
   }
 

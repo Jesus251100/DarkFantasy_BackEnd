@@ -3,8 +3,12 @@ import jwt from 'jsonwebtoken'
 import { Server } from 'socket.io'
 import { GestionSalas, type MiembroCola, type OyenteSalas } from '../application/GestionSalas'
 import type { SalaOnline } from '../domain/online/SalaOnline'
+import { prisma } from '../infrastructure/prisma'
 import { PrismaPartidasOnlineRepo } from '../infrastructure/PrismaPartidasOnlineRepo'
 import type { JwtPayload } from './auth'
+
+const CUPO_SALA = 4
+const PUNTOS_POR_VICTORIA = 25
 
 const secreto = () => process.env.JWT_SECRET ?? 'darkfantasy-dev'
 
@@ -65,6 +69,63 @@ export function montarOnline(servidor: HttpServer): Server {
 
   const gestion = new GestionSalas(oyente, repo)
 
+  interface Espera {
+    codigo: string
+    anfitrionId: string
+    miembros: MiembroCola[]
+  }
+
+  const esperas = new Map<string, Espera>()
+  const esperaDe = new Map<string, string>()
+
+  const codigoNuevo = (): string => {
+    const alfabeto = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    let codigo = ''
+    for (let i = 0; i < 4; i += 1) {
+      codigo += alfabeto[Math.floor(Math.random() * alfabeto.length)]
+    }
+    return esperas.has(codigo) ? codigoNuevo() : codigo
+  }
+
+  const vistaEspera = (espera: Espera) => ({
+    codigo: espera.codigo,
+    anfitrionId: espera.anfitrionId,
+    jugadores: espera.miembros.map((miembro) => ({
+      id: miembro.usuarioId,
+      nombre: miembro.nombre,
+    })),
+  })
+
+  const emitirEspera = (espera: Espera) => {
+    const vista = vistaEspera(espera)
+    for (const miembro of espera.miembros) {
+      io.to(miembro.socketId).emit('room:state', vista)
+    }
+  }
+
+  const salirEspera = (usuarioId: string) => {
+    const codigo = esperaDe.get(usuarioId)
+    if (!codigo) return
+    const espera = esperas.get(codigo)
+    esperaDe.delete(usuarioId)
+    if (!espera) return
+    espera.miembros = espera.miembros.filter((miembro) => miembro.usuarioId !== usuarioId)
+    if (espera.miembros.length === 0) {
+      esperas.delete(codigo)
+      return
+    }
+    if (espera.anfitrionId === usuarioId) {
+      espera.anfitrionId = espera.miembros[0]?.usuarioId ?? espera.anfitrionId
+    }
+    emitirEspera(espera)
+  }
+
+  const miembroDe = (socketId: string, sesionActual: Sesion): MiembroCola => ({
+    usuarioId: sesionActual.usuarioId,
+    nombre: sesionActual.nombre,
+    socketId,
+  })
+
   io.use((socket, next) => {
     const token = (socket.handshake.auth?.token as string | undefined) ?? ''
     if (!token) {
@@ -85,8 +146,117 @@ export function montarOnline(servidor: HttpServer): Server {
     sesiones.set(socket.id, sesion)
 
     socket.emit('online:ready', { usuarioId: sesion.usuarioId, nombre: sesion.nombre })
+    void socket.join('lobby-online')
+
+    socket.on('ranking:pedir', () => {
+      void listarRanking()
+        .then((filas) => {
+          const yaEsta = filas.some((fila) => fila.nombre === sesion.nombre)
+          const lista = yaEsta
+            ? filas
+            : [{ nombre: sesion.nombre, puntos: 0, victorias: 0 }, ...filas]
+          socket.emit('ranking:lista', lista.slice(0, 8))
+        })
+        .catch(() => {
+          socket.emit('ranking:lista', [{ nombre: sesion.nombre, puntos: 0, victorias: 0 }])
+        })
+    })
+
+    socket.on('chat:send', (payload: { texto?: string }) => {
+      const texto = String(payload?.texto ?? '').trim().slice(0, 80)
+      if (!texto) return
+      const mensaje = {
+        id: `${Date.now()}-${socket.id}`,
+        nombre: sesion.nombre,
+        texto,
+      }
+      const codigo = esperaDe.get(sesion.usuarioId)
+      const espera = codigo ? esperas.get(codigo) : undefined
+      if (espera) {
+        for (const miembro of espera.miembros) {
+          io.to(miembro.socketId).emit('chat:message', mensaje)
+        }
+        return
+      }
+      const sala = gestion.salaDe(sesion.usuarioId)
+      if (sala) {
+        io.to(sala.id).emit('chat:message', mensaje)
+        return
+      }
+      io.to('lobby-online').emit('chat:message', mensaje)
+    })
+
+    socket.on('room:create', () => {
+      gestion.salirCola(sesion.usuarioId)
+      salirEspera(sesion.usuarioId)
+      const espera: Espera = {
+        codigo: codigoNuevo(),
+        anfitrionId: sesion.usuarioId,
+        miembros: [miembroDe(socket.id, sesion)],
+      }
+      esperas.set(espera.codigo, espera)
+      esperaDe.set(sesion.usuarioId, espera.codigo)
+      emitirEspera(espera)
+    })
+
+    socket.on('room:join', (payload: { codigo?: string }) => {
+      const codigo = String(payload?.codigo ?? '').trim().toUpperCase()
+      const espera = esperas.get(codigo)
+      if (!espera) {
+        socket.emit('room:error', { mensaje: 'Esa sala no existe.' })
+        return
+      }
+      if (espera.miembros.some((miembro) => miembro.usuarioId === sesion.usuarioId)) {
+        emitirEspera(espera)
+        return
+      }
+      if (espera.miembros.length >= CUPO_SALA) {
+        socket.emit('room:error', { mensaje: 'La sala ya está llena.' })
+        return
+      }
+      gestion.salirCola(sesion.usuarioId)
+      salirEspera(sesion.usuarioId)
+      espera.miembros.push(miembroDe(socket.id, sesion))
+      esperaDe.set(sesion.usuarioId, espera.codigo)
+      emitirEspera(espera)
+    })
+
+    socket.on('room:leave', () => {
+      salirEspera(sesion.usuarioId)
+      socket.emit('room:closed')
+    })
+
+    socket.on('room:start', () => {
+      const codigo = esperaDe.get(sesion.usuarioId)
+      const espera = codigo ? esperas.get(codigo) : undefined
+      if (!espera || espera.anfitrionId !== sesion.usuarioId) {
+        socket.emit('room:error', { mensaje: 'Solo quien creó la sala puede empezarla.' })
+        return
+      }
+      const miembros = espera.miembros.map((miembro) => ({ ...miembro }))
+      esperas.delete(espera.codigo)
+      for (const miembro of miembros) esperaDe.delete(miembro.usuarioId)
+      gestion.iniciarSala(miembros)
+    })
+
+    socket.on('booster:lanzar', (payload: { boosterId?: number; objetivoId?: string }) => {
+      const sala = gestion.salaDe(sesion.usuarioId)
+      const boosterId = Number(payload?.boosterId)
+      const objetivoId = String(payload?.objetivoId ?? '')
+      if (!sala || sala.estadoActual !== 'playing') return
+      if (![1, 2, 3, 4].includes(boosterId) || !objetivoId) return
+      const objetivo = sala.jugadores.find((jugador) => jugador.id === objetivoId)
+      if (!objetivo) return
+      io.to(sala.id).emit('booster:vuelo', {
+        deId: sesion.usuarioId,
+        deNombre: sesion.nombre,
+        boosterId,
+        objetivoId,
+      })
+    })
 
     socket.on('queue:join', () => {
+      salirEspera(sesion.usuarioId)
       const miembro: MiembroCola = {
         usuarioId: sesion.usuarioId,
         nombre: sesion.nombre,
@@ -107,9 +277,25 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.on('disconnect', () => {
       sesiones.delete(socket.id)
+      salirEspera(sesion.usuarioId)
       gestion.abandonar(sesion.usuarioId)
     })
   })
 
   return io
+}
+
+async function listarRanking(): Promise<{ nombre: string; puntos: number; victorias: number }[]> {
+  const grupos = await prisma.participacionOnline.groupBy({
+    by: ['nombre'],
+    where: { esBot: false, gano: true },
+    _count: { _all: true },
+  })
+  return grupos
+    .map((grupo) => ({
+      nombre: grupo.nombre,
+      victorias: grupo._count._all,
+      puntos: grupo._count._all * PUNTOS_POR_VICTORIA,
+    }))
+    .sort((a, b) => b.puntos - a.puntos)
 }

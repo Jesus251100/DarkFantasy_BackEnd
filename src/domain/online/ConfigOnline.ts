@@ -21,7 +21,7 @@ export const CONFIG_ONLINE: ConfigOnline = {
   maxNumber: 75,
   winModes: ['row', 'column', 'diagonal'],
   drawIntervalMs: 3000,
-  revealDelayMs: 7200,
+  revealDelayMs: 10000,
   minPlayers: 2,
   maxPlayers: 4,
   fillWithBotsAfterMs: 10_000,
