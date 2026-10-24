@@ -67,6 +67,21 @@ npm run prisma:migrate   # prisma migrate dev --name init
 npm run prisma:seed      # carga los datos iniciales
 ```
 
+### Cuando cambies el esquema de la base de datos
+
+Hoy el arranque del contenedor usa `prisma db push`, que aplica el esquema **sin dejar
+registro** de qué se cambió. Para que cada cambio en la base quede documentado:
+
+1. Edita `prisma/schema.prisma`.
+2. Genera la migración con un nombre descriptivo:
+   `npx prisma migrate dev --name add_ boosters_equipo`
+   (crea el SQL en `prisma/migrations/<marca_de_tiempo>_<nombre>/migration.sql`).
+3. **Versiona la carpeta `prisma/migrations/`** junto al resto del cambio: ese archivo
+   es el registro de qué se hizo en la base de datos y en qué orden se aplica.
+
+`prisma db push` queda solo para el estado inicial de una base recién creada; a partir
+de ahí, las modificaciones del esquema van siempre por migración.
+
 > **Prisma 7**: el cliente ya **no** se genera dentro de `node_modules` ni se auto-genera al hacer
 > `db push`/`migrate`. `npm install` ejecuta `prisma generate` vía `postinstall`; si lo necesitas de
 > forma manual usa `npm run prisma:generate` (salida en `src/generated/prisma`, importada como
