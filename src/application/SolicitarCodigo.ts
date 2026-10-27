@@ -16,7 +16,20 @@ export class SolicitarCodigo {
     if (existe) {
       throw Object.assign(new Error('Ese correo ya está registrado.'), { status: 409 })
     }
+    return this.guardarYEnviar(correo, 'registro')
+  }
 
+  /** Código para quien ya tiene cuenta y olvidó la contraseña. */
+  async ejecutarRestablecimiento(correoCrudo: string): Promise<{ bandeja?: string }> {
+    const correo = correoCrudo.trim().toLowerCase()
+    const existe = await prisma.usuario.findUnique({ where: { correo } })
+    if (!existe) {
+      throw Object.assign(new Error('Ese correo no está registrado.'), { status: 404 })
+    }
+    return this.guardarYEnviar(correo, 'clave')
+  }
+
+  private async guardarYEnviar(correo: string, motivo: 'registro' | 'clave'): Promise<{ bandeja?: string }> {
     const ahora = Date.now()
     const previa = ultimaSolicitud.get(correo) ?? 0
     if (ahora - previa < ESPERA_MS) {
@@ -39,7 +52,7 @@ export class SolicitarCodigo {
     })
 
     try {
-      await this.correo.enviarCodigo(correo, codigo)
+      await this.correo.enviarCodigo(correo, codigo, motivo)
     } catch (e) {
       const detalle = e instanceof Error ? e.message : 'error SMTP'
       const local = Boolean(this.correo.bandejaLocal())
@@ -75,4 +88,14 @@ export async function consumirCodigo(correo: string, codigo: string): Promise<bo
     }
   }
   return false
+}
+
+export async function restablecerClave(correo: string, codigo: string, clave: string): Promise<boolean> {
+  const ok = await consumirCodigo(correo, codigo)
+  if (!ok) return false
+  await prisma.usuario.update({
+    where: { correo },
+    data: { claveHash: await bcrypt.hash(clave, 10) },
+  })
+  return true
 }

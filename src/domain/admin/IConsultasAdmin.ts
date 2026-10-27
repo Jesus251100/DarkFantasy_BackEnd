@@ -3,6 +3,7 @@ export interface ResumenUsuarioAdmin {
   correo: string
   rol: string
   nombre: string
+  nacionalidad: string | null
   creadoEn: Date
   coins: number
   diamonds: number

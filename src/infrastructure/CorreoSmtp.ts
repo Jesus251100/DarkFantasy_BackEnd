@@ -40,7 +40,7 @@ function smtpConfig(): SmtpCfg {
 }
 
 export class CorreoSmtp implements IEnviadorCorreo {
-  async enviarCodigo(correo: string, codigo: string): Promise<void> {
+  async enviarCodigo(correo: string, codigo: string, motivo: 'registro' | 'clave' = 'registro'): Promise<void> {
     const cfg = smtpConfig()
     const transporte = nodemailer.createTransport({
       host: cfg.host,
@@ -57,13 +57,16 @@ export class CorreoSmtp implements IEnviadorCorreo {
       from: cfg.from,
       to: correo,
       subject: 'Tu código de Dark Fantasy',
-      text: `Tu código de verificación es ${codigo}. Vale 10 minutos. Si no pediste esta cuenta, ignora el mensaje.`,
+      text:
+        motivo === 'clave'
+          ? `Tu código para cambiar la contraseña es ${codigo}. Vale 10 minutos. Si no pediste este cambio, ignora el mensaje.`
+          : `Tu código de verificación es ${codigo}. Vale 10 minutos. Si no pediste esta cuenta, ignora el mensaje.`,
       html: `
         <div style="font-family:Georgia,serif;background:#0b1220;color:#e8eef4;padding:24px">
           <h1 style="color:#e8c86a;font-size:20px;margin:0 0 12px">Dark Fantasy</h1>
-          <p>Tu código de verificación es:</p>
+          <p>${motivo === 'clave' ? 'Tu código para cambiar la contraseña es:' : 'Tu código de verificación es:'}</p>
           <p style="font-size:32px;letter-spacing:8px;font-weight:700;color:#3dce6a;margin:16px 0">${codigo}</p>
-          <p style="color:#9aa8b8;font-size:13px">Vale 10 minutos. Si no pediste esta cuenta, ignora el mensaje.</p>
+          <p style="color:#9aa8b8;font-size:13px">Vale 10 minutos. ${motivo === 'clave' ? 'Si no pediste este cambio, ignora el mensaje.' : 'Si no pediste esta cuenta, ignora el mensaje.'}</p>
         </div>
       `,
     })

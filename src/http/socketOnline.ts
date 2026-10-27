@@ -1,10 +1,12 @@
 import type { Server as HttpServer } from 'node:http'
 import jwt from 'jsonwebtoken'
 import { Server } from 'socket.io'
+import { CazaDragones, PREMIOS_CAZA, type Cazador, type OyenteCaza } from '../application/CazaDragones'
 import { GestionSalas, type MiembroCola, type OyenteSalas } from '../application/GestionSalas'
 import type { SalaOnline } from '../domain/online/SalaOnline'
 import { prisma } from '../infrastructure/prisma'
 import { PrismaPartidasOnlineRepo } from '../infrastructure/PrismaPartidasOnlineRepo'
+import { pagarDiamantesCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
 
 const CUPO_SALA = 4
@@ -69,6 +71,60 @@ export function montarOnline(servidor: HttpServer): Server {
 
   const gestion = new GestionSalas(oyente, repo)
 
+  const avisarRuleta = async (cazadores: Cazador[], diamantes: number) => {
+    const pagado = await pagarDiamantesCaza(
+      cazadores.map((cazador) => cazador.usuarioId),
+      diamantes,
+    )
+    const premio = {
+      diamantes,
+      pagado,
+      opciones: PREMIOS_CAZA.map((premioCaza) => ({
+        diamantes: premioCaza.diamantes,
+        peso: premioCaza.peso,
+      })),
+    }
+    for (const cazador of cazadores) {
+      io.to(cazador.socketId).emit('dragon:ruleta', premio)
+    }
+  }
+
+  const oyenteCaza: OyenteCaza = {
+    onEspera(socketId, esperando) {
+      io.to(socketId).emit('dragon:esperando', { esperando })
+    },
+    onInicio(caceriaId, cazadores) {
+      for (const cazador of cazadores) {
+        const rival = cazadores.find((otro) => otro.usuarioId !== cazador.usuarioId)
+        io.to(cazador.socketId).emit('dragon:inicio', {
+          id: caceriaId,
+          rival: rival?.nombre ?? 'Cazador',
+        })
+      }
+    },
+    onEstado(cazador, vista) {
+      io.to(cazador.socketId).emit('dragon:estado', vista)
+    },
+    onBola(_caceriaId, numero, cazadores) {
+      for (const cazador of cazadores) {
+        io.to(cazador.socketId).emit('dragon:bola', { numero })
+      }
+    },
+    onRechazo(socketId, mensaje) {
+      io.to(socketId).emit('dragon:rechazo', { mensaje })
+    },
+    onVictoria(_caceriaId, cazadores, diamantes) {
+      void avisarRuleta(cazadores, diamantes)
+    },
+    onDerrota(_caceriaId, cazadores, mensaje) {
+      for (const cazador of cazadores) {
+        io.to(cazador.socketId).emit('dragon:fin', { resultado: 'derrota', mensaje })
+      }
+    },
+  }
+
+  const caza = new CazaDragones(oyenteCaza)
+
   interface Espera {
     codigo: string
     anfitrionId: string
@@ -77,6 +133,8 @@ export function montarOnline(servidor: HttpServer): Server {
 
   const esperas = new Map<string, Espera>()
   const esperaDe = new Map<string, string>()
+  const salasCaza = new Map<string, Espera>()
+  const cazaDe = new Map<string, string>()
 
   const codigoNuevo = (): string => {
     const alfabeto = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -84,7 +142,7 @@ export function montarOnline(servidor: HttpServer): Server {
     for (let i = 0; i < 4; i += 1) {
       codigo += alfabeto[Math.floor(Math.random() * alfabeto.length)]
     }
-    return esperas.has(codigo) ? codigoNuevo() : codigo
+    return esperas.has(codigo) || salasCaza.has(codigo) ? codigoNuevo() : codigo
   }
 
   const vistaEspera = (espera: Espera) => ({
@@ -120,6 +178,30 @@ export function montarOnline(servidor: HttpServer): Server {
     emitirEspera(espera)
   }
 
+  const emitirSalaCaza = (sala: Espera) => {
+    const vista = vistaEspera(sala)
+    for (const miembro of sala.miembros) {
+      io.to(miembro.socketId).emit('dragon:sala', vista)
+    }
+  }
+
+  const salirSalaCaza = (usuarioId: string) => {
+    const codigo = cazaDe.get(usuarioId)
+    if (!codigo) return
+    const sala = salasCaza.get(codigo)
+    cazaDe.delete(usuarioId)
+    if (!sala) return
+    sala.miembros = sala.miembros.filter((miembro) => miembro.usuarioId !== usuarioId)
+    if (sala.miembros.length === 0) {
+      salasCaza.delete(codigo)
+      return
+    }
+    if (sala.anfitrionId === usuarioId) {
+      sala.anfitrionId = sala.miembros[0]?.usuarioId ?? sala.anfitrionId
+    }
+    emitirSalaCaza(sala)
+  }
+
   const miembroDe = (socketId: string, sesionActual: Sesion): MiembroCola => ({
     usuarioId: sesionActual.usuarioId,
     nombre: sesionActual.nombre,
@@ -147,6 +229,16 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.emit('online:ready', { usuarioId: sesion.usuarioId, nombre: sesion.nombre })
     void socket.join('lobby-online')
+
+    const codigoCaza = cazaDe.get(sesion.usuarioId)
+    if (codigoCaza) {
+      const salaCaza = salasCaza.get(codigoCaza)
+      const miembroCaza = salaCaza?.miembros.find((item) => item.usuarioId === sesion.usuarioId)
+      if (salaCaza && miembroCaza) {
+        miembroCaza.socketId = socket.id
+        emitirSalaCaza(salaCaza)
+      }
+    }
 
     socket.on('ranking:pedir', () => {
       void listarRanking()
@@ -188,7 +280,9 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.on('room:create', () => {
       gestion.salirCola(sesion.usuarioId)
+      caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
       const espera: Espera = {
         codigo: codigoNuevo(),
         anfitrionId: sesion.usuarioId,
@@ -215,7 +309,9 @@ export function montarOnline(servidor: HttpServer): Server {
         return
       }
       gestion.salirCola(sesion.usuarioId)
+      caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
       espera.miembros.push(miembroDe(socket.id, sesion))
       esperaDe.set(sesion.usuarioId, espera.codigo)
       emitirEspera(espera)
@@ -256,7 +352,9 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('queue:join', () => {
+      caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
       const miembro: MiembroCola = {
         usuarioId: sesion.usuarioId,
         nombre: sesion.nombre,
@@ -275,9 +373,91 @@ export function montarOnline(servidor: HttpServer): Server {
       gestion.reclamarBingo(sesion.usuarioId)
     })
 
+    socket.on('dragon:create', () => {
+      gestion.salirCola(sesion.usuarioId)
+      salirEspera(sesion.usuarioId)
+      caza.salir(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
+      const sala: Espera = {
+        codigo: codigoNuevo(),
+        anfitrionId: sesion.usuarioId,
+        miembros: [miembroDe(socket.id, sesion)],
+      }
+      salasCaza.set(sala.codigo, sala)
+      cazaDe.set(sesion.usuarioId, sala.codigo)
+      emitirSalaCaza(sala)
+    })
+
+    socket.on('dragon:code', (payload: { codigo?: string }) => {
+      const codigo = String(payload?.codigo ?? '').trim().toUpperCase()
+      const sala = salasCaza.get(codigo)
+      if (!sala) {
+        socket.emit('dragon:error', { mensaje: 'Esa sala no existe.' })
+        return
+      }
+      const ya = sala.miembros.find((miembro) => miembro.usuarioId === sesion.usuarioId)
+      if (ya) {
+        ya.socketId = socket.id
+        emitirSalaCaza(sala)
+        return
+      }
+      if (sala.miembros.length >= 2) {
+        socket.emit('dragon:error', { mensaje: 'La sala ya está llena.' })
+        return
+      }
+      gestion.salirCola(sesion.usuarioId)
+      salirEspera(sesion.usuarioId)
+      caza.salir(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
+      sala.miembros.push(miembroDe(socket.id, sesion))
+      cazaDe.set(sesion.usuarioId, sala.codigo)
+      emitirSalaCaza(sala)
+    })
+
+    socket.on('dragon:room-leave', () => {
+      salirSalaCaza(sesion.usuarioId)
+      socket.emit('dragon:sala-cerrada')
+    })
+
+    socket.on('dragon:start', () => {
+      const codigo = cazaDe.get(sesion.usuarioId)
+      const sala = codigo ? salasCaza.get(codigo) : undefined
+      if (!sala || sala.anfitrionId !== sesion.usuarioId) {
+        socket.emit('dragon:error', { mensaje: 'Solo quien creó la sala puede empezarla.' })
+        return
+      }
+      if (sala.miembros.length < 2) {
+        socket.emit('dragon:error', { mensaje: 'Hace falta que tu amigo se una con el código.' })
+        return
+      }
+      const miembros = sala.miembros.map((miembro) => ({ ...miembro }))
+      salasCaza.delete(sala.codigo)
+      for (const miembro of miembros) cazaDe.delete(miembro.usuarioId)
+      caza.iniciarCon(miembros)
+    })
+
+    socket.on('dragon:join', () => {
+      gestion.salirCola(sesion.usuarioId)
+      salirEspera(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
+      caza.entrar(sesion.usuarioId, sesion.nombre, socket.id)
+    })
+
+    socket.on('dragon:leave', () => {
+      caza.salir(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
+      socket.emit('dragon:left')
+    })
+
+    socket.on('dragon:claim', () => {
+      caza.reclamar(sesion.usuarioId)
+    })
+
     socket.on('disconnect', () => {
       sesiones.delete(socket.id)
       salirEspera(sesion.usuarioId)
+      salirSalaCaza(sesion.usuarioId)
+      caza.salir(sesion.usuarioId)
       gestion.abandonar(sesion.usuarioId)
     })
   })

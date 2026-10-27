@@ -19,6 +19,7 @@ export class PrismaAdminRepo implements IConsultasAdmin {
       correo: u.correo,
       rol: u.rol,
       nombre: u.nombre,
+      nacionalidad: u.nacionalidad,
       creadoEn: u.creadoEn,
       coins: u.progreso?.coins ?? 0,
       diamonds: u.progreso?.diamonds ?? 0,

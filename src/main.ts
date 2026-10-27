@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import { createServer } from 'node:http'
+import { networkInterfaces } from 'node:os'
 import cors from 'cors'
 import express from 'express'
 import { aplicarDisparadores } from './infrastructure/aplicarDisparadores'
@@ -62,6 +63,30 @@ app.get('/api/salud', async (_req, res) => {
       error: 'No hay conexión con PostgreSQL. ¿Está docker start darkfantasy-pg?',
     })
   }
+})
+
+function ipDeCasa(): string {
+  const forzada = process.env.RED_LOCAL?.trim()
+  if (forzada) return forzada
+  const encontradas: string[] = []
+  for (const lista of Object.values(networkInterfaces())) {
+    for (const red of lista ?? []) {
+      if (red.internal) continue
+      const familia = String(red.family)
+      if (familia !== 'IPv4' && familia !== '4') continue
+      if (red.address.startsWith('172.')) continue
+      encontradas.push(red.address)
+    }
+  }
+  return (
+    encontradas.find((ip) => ip.startsWith('192.168.')) ??
+    encontradas.find((ip) => ip.startsWith('10.')) ??
+    ''
+  )
+}
+
+app.get('/api/red-local', (_req, res) => {
+  res.json({ ip: ipDeCasa() })
 })
 
 app.use('/api/auth', rutasAuth)

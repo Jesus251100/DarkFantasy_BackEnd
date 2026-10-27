@@ -6,7 +6,7 @@ import { authObligatoria, firmarToken } from './auth'
 import { ObtenerCampania } from '../application/ObtenerCampania'
 import { PrismaCampaniaRepo } from '../infrastructure/PrismaCampaniaRepo'
 import { CorreoSmtp } from '../infrastructure/CorreoSmtp'
-import { SolicitarCodigo, consumirCodigo } from '../application/SolicitarCodigo'
+import { SolicitarCodigo, consumirCodigo, restablecerClave } from '../application/SolicitarCodigo'
 
 const router = Router()
 const solicitarCodigo = new SolicitarCodigo(new CorreoSmtp())
@@ -39,6 +39,62 @@ const loginSchema = z.object({
   rol: z.enum(['jugador', 'administrador']).optional(),
 })
 
+const perfilSchema = z.object({
+  nombre: z.string().trim().min(1).max(40),
+  correo: correoSchema,
+  nacionalidad: z.string().trim().max(40).nullable().optional(),
+  genero: z.enum(['M', 'F']).nullable().optional(),
+  fechaNacimiento: z.string().trim().nullable().optional(),
+  claveActual: z.string().optional(),
+  claveNueva: z.string().optional(),
+})
+
+function fechaCorta(valor: Date | null | undefined): string | null {
+  if (!valor) return null
+  const anio = valor.getUTCFullYear()
+  const mes = String(valor.getUTCMonth() + 1).padStart(2, '0')
+  const dia = String(valor.getUTCDate()).padStart(2, '0')
+  return `${anio}-${mes}-${dia}`
+}
+
+function leerFecha(texto: string): Date | null {
+  const partes = /^(\d{4})-(\d{2})-(\d{2})$/.exec(texto)
+  if (!partes) return null
+  const anio = Number(partes[1])
+  const mes = Number(partes[2])
+  const dia = Number(partes[3])
+  const fecha = new Date(Date.UTC(anio, mes - 1, dia))
+  if (
+    fecha.getUTCFullYear() !== anio ||
+    fecha.getUTCMonth() !== mes - 1 ||
+    fecha.getUTCDate() !== dia
+  ) {
+    return null
+  }
+  if (anio < 1900 || fecha.getTime() > Date.now()) return null
+  return fecha
+}
+
+function datosPublicos(usuario: {
+  id: string
+  correo: string
+  rol: string
+  nombre: string
+  nacionalidad: string | null
+  genero: string | null
+  fechaNacimiento: Date | null
+}) {
+  return {
+    id: usuario.id,
+    correo: usuario.correo,
+    rol: usuario.rol,
+    nombre: usuario.nombre,
+    nacionalidad: usuario.nacionalidad,
+    genero: usuario.genero,
+    fechaNacimiento: fechaCorta(usuario.fechaNacimiento),
+  }
+}
+
 router.post('/solicitar-codigo', async (req, res) => {
   const parsed = solicitarSchema.safeParse(req.body)
   if (!parsed.success) {
@@ -53,6 +109,48 @@ router.post('/solicitar-codigo', async (req, res) => {
     const error = e instanceof Error ? e.message : 'No se pudo enviar el código.'
     res.status(Number.isFinite(status) ? status : 503).json({ error })
   }
+})
+
+router.post('/olvidar-clave', async (req, res) => {
+  const parsed = solicitarSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Correo inválido.' })
+    return
+  }
+  try {
+    const resultado = await solicitarCodigo.ejecutarRestablecimiento(parsed.data.correo)
+    res.json({ ok: true, correo: parsed.data.correo.trim().toLowerCase(), bandeja: resultado.bandeja })
+  } catch (e) {
+    const status = e && typeof e === 'object' && 'status' in e ? Number((e as { status: number }).status) : 503
+    const error = e instanceof Error ? e.message : 'No se pudo enviar el código.'
+    res.status(Number.isFinite(status) ? status : 503).json({ error })
+  }
+})
+
+const restablecerSchema = z.object({
+  correo: correoSchema,
+  codigo: z.string().regex(/^\d{6}$/),
+  clave: z.string().min(4),
+})
+
+router.post('/restablecer-clave', async (req, res) => {
+  const parsed = restablecerSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Correo, código o contraseña inválidos.' })
+    return
+  }
+  const correo = parsed.data.correo.trim().toLowerCase()
+  const usuario = await prisma.usuario.findUnique({ where: { correo } })
+  if (!usuario) {
+    res.status(404).json({ error: 'Ese correo no está registrado.' })
+    return
+  }
+  const ok = await restablecerClave(correo, parsed.data.codigo, parsed.data.clave)
+  if (!ok) {
+    res.status(401).json({ error: 'Código incorrecto o vencido. Pide uno nuevo.' })
+    return
+  }
+  res.json({ ok: true })
 })
 
 router.post('/register', async (req, res) => {
@@ -102,15 +200,7 @@ router.post('/register', async (req, res) => {
   })
   res.status(201).json({
     token,
-    usuario: {
-      id: usuario.id,
-      correo: usuario.correo,
-      rol: usuario.rol,
-      nombre: usuario.nombre,
-      nacionalidad: usuario.nacionalidad,
-      genero: usuario.genero,
-      fechaNacimiento: usuario.fechaNacimiento,
-    },
+    usuario: datosPublicos(usuario),
   })
 })
 
@@ -146,15 +236,7 @@ router.post('/login', async (req, res) => {
   })
   res.json({
     token,
-    usuario: {
-      id: usuario.id,
-      correo: usuario.correo,
-      rol: usuario.rol,
-      nombre: usuario.nombre,
-      nacionalidad: usuario.nacionalidad,
-      genero: usuario.genero,
-      fechaNacimiento: usuario.fechaNacimiento,
-    },
+    usuario: datosPublicos(usuario),
   })
 })
 
@@ -166,17 +248,82 @@ router.get('/me', authObligatoria, async (req, res) => {
   }
   const campania = await new ObtenerCampania(new PrismaCampaniaRepo()).ejecutar(usuario.id)
   res.json({
-    usuario: {
-      id: usuario.id,
-      correo: usuario.correo,
-      rol: usuario.rol,
-      nombre: usuario.nombre,
-      nacionalidad: usuario.nacionalidad,
-      genero: usuario.genero,
-      fechaNacimiento: usuario.fechaNacimiento,
-    },
+    usuario: datosPublicos(usuario),
     campania,
   })
+})
+
+router.patch('/perfil', authObligatoria, async (req, res) => {
+  const parsed = perfilSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Revisa los datos del perfil.' })
+    return
+  }
+  const actual = await prisma.usuario.findUnique({ where: { id: req.usuario!.sub } })
+  if (!actual) {
+    res.status(404).json({ error: 'Usuario no encontrado.' })
+    return
+  }
+
+  const correo = parsed.data.correo.trim().toLowerCase()
+  const claveNueva = parsed.data.claveNueva?.trim() ?? ''
+  const correoCambia = correo !== actual.correo
+  if (correoCambia || claveNueva) {
+    const claveActual = parsed.data.claveActual ?? ''
+    const coincide = claveActual ? await bcrypt.compare(claveActual, actual.claveHash) : false
+    if (!coincide) {
+      res.status(401).json({ error: 'La contraseña actual no coincide.' })
+      return
+    }
+  }
+  if (claveNueva && claveNueva.length < 4) {
+    res.status(400).json({ error: 'La contraseña nueva debe tener al menos 4 caracteres.' })
+    return
+  }
+  if (correoCambia) {
+    const ocupado = await prisma.usuario.findUnique({ where: { correo } })
+    if (ocupado && ocupado.id !== actual.id) {
+      res.status(409).json({ error: 'Ese correo ya está registrado.' })
+      return
+    }
+  }
+
+  let fechaNacimiento: Date | null = actual.fechaNacimiento
+  if (parsed.data.fechaNacimiento !== undefined) {
+    const texto = parsed.data.fechaNacimiento?.trim() ?? ''
+    if (!texto) {
+      fechaNacimiento = null
+    } else {
+      fechaNacimiento = leerFecha(texto)
+      if (!fechaNacimiento) {
+        res.status(400).json({ error: 'La fecha de nacimiento no es válida.' })
+        return
+      }
+    }
+  }
+
+  const nacionalidadLimpia = parsed.data.nacionalidad?.trim() ?? ''
+  const usuario = await prisma.usuario.update({
+    where: { id: actual.id },
+    data: {
+      nombre: parsed.data.nombre.trim(),
+      correo,
+      nacionalidad: nacionalidadLimpia ? nacionalidadLimpia.toLowerCase() : null,
+      genero: parsed.data.genero ?? null,
+      fechaNacimiento,
+      ...(claveNueva ? { claveHash: await bcrypt.hash(claveNueva, 10) } : {}),
+    },
+  })
+  const token = firmarToken({
+    sub: usuario.id,
+    correo: usuario.correo,
+    rol: usuario.rol as 'jugador' | 'administrador',
+    nombre: usuario.nombre,
+    nacionalidad: usuario.nacionalidad ?? undefined,
+    genero: usuario.genero ?? undefined,
+    fechaNacimiento: usuario.fechaNacimiento ?? undefined,
+  })
+  res.json({ token, usuario: datosPublicos(usuario) })
 })
 
 export default router
