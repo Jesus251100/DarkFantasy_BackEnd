@@ -26,10 +26,10 @@ const registroSchema = z.object({
   confirmarCorreo: correoSchema,
   clave: z.string().min(4),
   codigo: z.string().regex(/^\d{6}$/),
-  nombre: z.string().min(1).max(40).optional(),
-  nacionalidad: z.string().optional(),
-  genero: z.enum(['M', 'F']).optional(),
-  fechaNacimiento: z.string().optional(),
+  nombre: z.string().trim().min(1).max(40),
+  nacionalidad: z.string().trim().min(2),
+  genero: z.enum(['M', 'F']),
+  fechaNacimiento: z.string().trim().min(10),
   rol: z.enum(['jugador', 'administrador']).optional(),
 })
 
@@ -156,7 +156,7 @@ router.post('/restablecer-clave', async (req, res) => {
 router.post('/register', async (req, res) => {
   const parsed = registroSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json({ error: 'Correo, contraseña o código inválidos.' })
+    res.status(400).json({ error: 'Completa todos los datos: nombre, país, correo, contraseña, género y fecha de nacimiento.' })
     return
   }
   const correo = parsed.data.correo.trim().toLowerCase()
@@ -176,16 +176,21 @@ router.post('/register', async (req, res) => {
     return
   }
   const rol = 'jugador'
-  const nombre = parsed.data.nombre?.trim() || 'Jugador'
+  const nombre = parsed.data.nombre.trim()
+  const fechaNacimiento = leerFecha(parsed.data.fechaNacimiento)
+  if (!fechaNacimiento) {
+    res.status(400).json({ error: 'La fecha de nacimiento no es válida.' })
+    return
+  }
   const usuario = await prisma.usuario.create({
     data: {
       correo,
       claveHash: await bcrypt.hash(parsed.data.clave, 10),
       rol,
       nombre,
-      nacionalidad: parsed.data.nacionalidad ?? null,
-      genero: parsed.data.genero ?? null,
-      fechaNacimiento: parsed.data.fechaNacimiento ? new Date(parsed.data.fechaNacimiento) : null,
+      nacionalidad: parsed.data.nacionalidad.trim().toLowerCase(),
+      genero: parsed.data.genero,
+      fechaNacimiento,
       progreso: { create: {} },
     },
   })
