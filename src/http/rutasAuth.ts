@@ -220,7 +220,10 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json({ error: 'Correo o contraseña inválidos.' })
+    const field = parsed.error.errors[0].path[0]
+    const message = parsed.error.errors[0].message
+    console.log('Login validation error:', field, message)
+    res.status(400).json({ error: `Datos inválidos: ${field} - ${message}` })
     return
   }
   const correo = parsed.data.correo.trim().toLowerCase()
@@ -255,16 +258,21 @@ router.post('/login', async (req, res) => {
 })
 
 router.get('/me', authObligatoria, async (req, res) => {
-  const usuario = await prisma.usuario.findUnique({ where: { id: req.usuario!.sub } })
-  if (!usuario) {
-    res.status(404).json({ error: 'Usuario no encontrado.' })
-    return
+  try {
+    const usuario = await prisma.usuario.findUnique({ where: { id: req.usuario!.sub } })
+    if (!usuario) {
+      res.status(404).json({ error: 'Usuario no encontrado en la base de datos.' })
+      return
+    }
+    const campania = await new ObtenerCampania(new PrismaCampaniaRepo()).ejecutar(usuario.id)
+    res.json({
+      usuario: datosPublicos(usuario),
+      campania,
+    })
+  } catch (error) {
+    const mensaje = error instanceof Error ? error.message : 'Error desconocido'
+    res.status(500).json({ error: `Error al leer datos: ${mensaje}` })
   }
-  const campania = await new ObtenerCampania(new PrismaCampaniaRepo()).ejecutar(usuario.id)
-  res.json({
-    usuario: datosPublicos(usuario),
-    campania,
-  })
 })
 
 router.patch('/perfil', authObligatoria, async (req, res) => {
