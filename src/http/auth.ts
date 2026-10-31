@@ -6,6 +6,7 @@ export type JwtPayload = {
   correo: string
   rol: 'jugador' | 'administrador'
   nombre: string
+  avatar?: string | null
   nacionalidad?: string | null
   genero?: string | null
   fechaNacimiento?: Date | null
