@@ -42,11 +42,6 @@ const loginSchema = z.object({
 const perfilSchema = z.object({
   nombre: z.string().trim().min(1).max(40),
   correo: correoSchema,
-  avatar: z
-    .string()
-    .optional()
-    .refine((val) => val === undefined || val === null || /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+\/]+={0,2}$/.test(val), 'La imagen de perfil no es válida.')
-    .nullable(),
   nacionalidad: z.string().trim().max(40).nullable().optional(),
   genero: z.enum(['M', 'F']).nullable().optional(),
   fechaNacimiento: z.string().trim().nullable().optional(),
@@ -85,7 +80,6 @@ function datosPublicos(usuario: {
   correo: string
   rol: string
   nombre: string
-  avatar?: string | null
   nacionalidad: string | null
   genero: string | null
   fechaNacimiento: Date | null
@@ -95,7 +89,6 @@ function datosPublicos(usuario: {
     correo: usuario.correo,
     rol: usuario.rol,
     nombre: usuario.nombre,
-    avatar: usuario.avatar ?? null,
     nacionalidad: usuario.nacionalidad,
     genero: usuario.genero,
     fechaNacimiento: fechaCorta(usuario.fechaNacimiento),
@@ -206,7 +199,6 @@ router.post('/register', async (req, res) => {
     correo: usuario.correo,
     rol: usuario.rol as 'jugador' | 'administrador',
     nombre: usuario.nombre,
-    avatar: usuario.avatar ?? undefined,
     nacionalidad: usuario.nacionalidad ?? undefined,
     genero: usuario.genero ?? undefined,
     fechaNacimiento: usuario.fechaNacimiento ?? undefined,
@@ -243,7 +235,6 @@ router.post('/login', async (req, res) => {
     correo: usuario.correo,
     rol: usuario.rol as 'jugador' | 'administrador',
     nombre: usuario.nombre,
-    avatar: usuario.avatar ?? undefined,
     nacionalidad: usuario.nacionalidad ?? undefined,
     genero: usuario.genero ?? undefined,
     fechaNacimiento: usuario.fechaNacimiento ?? undefined,
@@ -322,7 +313,6 @@ router.patch('/perfil', authObligatoria, async (req, res) => {
     data: {
       nombre: parsed.data.nombre.trim(),
       correo,
-      ...(parsed.data.avatar !== undefined ? { avatar: parsed.data.avatar } : {}),
       nacionalidad: nacionalidadLimpia ? nacionalidadLimpia.toLowerCase() : null,
       genero: parsed.data.genero ?? null,
       fechaNacimiento,
@@ -334,7 +324,6 @@ router.patch('/perfil', authObligatoria, async (req, res) => {
     correo: usuario.correo,
     rol: usuario.rol as 'jugador' | 'administrador',
     nombre: usuario.nombre,
-    avatar: usuario.avatar ?? undefined,
     nacionalidad: usuario.nacionalidad ?? undefined,
     genero: usuario.genero ?? undefined,
     fechaNacimiento: usuario.fechaNacimiento ?? undefined,
