@@ -6,6 +6,7 @@ import { ComprarBoosterRemoto } from '../application/ComprarBoosterRemoto'
 import { IntercambiarMonedaRemoto } from '../application/IntercambiarMonedaRemoto'
 import { ListarLogros } from '../application/ListarLogros'
 import { ObtenerCampania } from '../application/ObtenerCampania'
+import { PartidasCampania } from '../application/PartidasCampania'
 import { RegistrarPartida } from '../application/RegistrarPartida'
 import { PrismaCampaniaRepo } from '../infrastructure/PrismaCampaniaRepo'
 import { PrismaPartidasRepo } from '../infrastructure/PrismaPartidasRepo'
@@ -16,6 +17,7 @@ router.use(authObligatoria)
 
 const campanias = new PrismaCampaniaRepo()
 const partidas = new PrismaPartidasRepo()
+const rondasCampania = new PartidasCampania()
 
 router.get('/', async (req, res) => {
   const campania = await new ObtenerCampania(campanias).ejecutar(req.usuario!.sub)
@@ -43,25 +45,135 @@ router.get('/logros', async (req, res) => {
   res.json({ logros })
 })
 
-router.post('/completar-nivel', async (req, res) => {
-  const parsed = z.object({ nivel: z.number().int().min(1).max(10) }).safeParse(req.body)
+router.post('/completar-nivel', (_req, res) => {
+  res.status(410).json({ error: 'La victoria debe validarse mediante una ronda de campaña.' })
+})
+
+router.post('/rondas', async (req, res) => {
+  const parsed = z
+    .object({
+      nivel: z.number().int().min(1).max(10),
+      fase: z.number().int().min(1).max(3),
+      modo: z
+        .enum(['row', 'column', 'diagonal', 'L', 'O', 'plus', 'X', 'T', 'arrow', 'H', 'diamond', 'zigzag', 'full', 'crown'])
+        .optional(),
+      runId: z.string().uuid().optional(),
+    })
+    .safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json({ error: 'Nivel inválido.' })
+    res.status(400).json({ error: 'Datos de partida inválidos.' })
     return
   }
-  const out = await new CompletarNivel(campanias, partidas).ejecutar(
-    req.usuario!.sub,
-    parsed.data.nivel,
-  )
-  if (!out) {
+  const campania = await new ObtenerCampania(campanias).ejecutar(req.usuario!.sub)
+  if (!campania) {
     res.status(404).json({ error: 'Usuario no encontrado.' })
     return
   }
-  if ('error' in out) {
-    res.status(409).json({ error: out.error })
+  try {
+    const ronda = rondasCampania.iniciar(
+      req.usuario!.sub,
+      parsed.data.nivel,
+      parsed.data.fase,
+      parsed.data.modo,
+      parsed.data.runId,
+      req.usuario!.rol === 'administrador' ? 10 : campania.highestUnlocked,
+    )
+    res.status(201).json({ ronda })
+  } catch (error) {
+    const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 409
+    res.status(status >= 400 && status < 500 ? status : 409).json({
+      error: error instanceof Error ? error.message : 'No se pudo iniciar la ronda.',
+    })
+  }
+})
+
+router.post('/rondas/:id/bola', (req, res) => {
+  const id = z.string().uuid().safeParse(req.params.id)
+  if (!id.success) {
+    res.status(400).json({ error: 'Ronda inválida.' })
     return
   }
-  res.json(out)
+  try {
+    const numero = rondasCampania.siguienteBola(req.usuario!.sub, id.data)
+    res.json({ numero })
+  } catch (error) {
+    const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 409
+    res.status(status >= 400 && status < 500 ? status : 409).json({
+      error: error instanceof Error ? error.message : 'No se pudo cantar la bola.',
+    })
+  }
+})
+
+router.post('/rondas/:id/cerrar', (req, res) => {
+  const id = z.string().uuid().safeParse(req.params.id)
+  if (!id.success) {
+    res.status(400).json({ error: 'Ronda inválida.' })
+    return
+  }
+  try {
+    rondasCampania.cerrar(req.usuario!.sub, id.data)
+    res.json({ ok: true })
+  } catch (error) {
+    res.status(409).json({
+      error: error instanceof Error ? error.message : 'No se pudo cerrar la ronda.',
+    })
+  }
+})
+
+router.post('/rondas/:id/reclamar', async (req, res) => {
+  const id = z.string().uuid().safeParse(req.params.id)
+  const parsed = z.object({ cartonIndex: z.number().int().min(0).max(1) }).safeParse(req.body)
+  if (!id.success || !parsed.success) {
+    res.status(400).json({ error: 'Reclamo inválido.' })
+    return
+  }
+  const ronda = rondasCampania.comenzarReclamo(req.usuario!.sub, id.data, parsed.data.cartonIndex)
+  if (!ronda) {
+    res.status(409).json({ error: 'El servidor no ha confirmado un BINGO válido.' })
+    return
+  }
+  if (ronda.estado === 'validada') {
+    const campania = await new ObtenerCampania(campanias).ejecutar(req.usuario!.sub)
+    res.json({
+      ok: true,
+      nivel: ronda.nivel,
+      fase: ronda.fase,
+      totalFases: ronda.totalFases,
+      nivelCompleto: ronda.fase === ronda.totalFases,
+      campania,
+    })
+    return
+  }
+  try {
+    let resultado
+    let campania
+    const nivelCompleto = ronda.fase === ronda.totalFases
+    if (nivelCompleto) {
+      const out = await new CompletarNivel(campanias, partidas).ejecutar(req.usuario!.sub, ronda.nivel)
+      if (!out) throw new Error('Usuario no encontrado.')
+      if ('error' in out) throw new Error(out.error)
+      resultado = out.resultado
+      campania = out.campania
+    } else {
+      await new RegistrarPartida(partidas).ejecutar(req.usuario!.sub, ronda.nivel, true)
+    }
+    rondasCampania.confirmarReclamo(ronda)
+    if (!campania) campania = await new ObtenerCampania(campanias).ejecutar(req.usuario!.sub)
+    res.json({
+      ok: true,
+      nivel: ronda.nivel,
+      fase: ronda.fase,
+      totalFases: ronda.totalFases,
+      nivelCompleto,
+      resultado,
+      campania,
+    })
+  } catch (error) {
+    rondasCampania.cancelarReclamo(ronda)
+    res.status(409).json({
+      error: error instanceof Error ? error.message : 'No se pudo guardar la victoria.',
+    })
+  }
 })
 
 router.post('/comprar-booster', async (req, res) => {
@@ -107,7 +219,7 @@ router.post('/partida', async (req, res) => {
   const parsed = z
     .object({
       nivel: z.number().int().min(1).max(10),
-      gano: z.boolean(),
+      gano: z.literal(false),
     })
     .safeParse(req.body)
   if (!parsed.success) {

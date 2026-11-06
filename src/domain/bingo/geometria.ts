@@ -1,5 +1,7 @@
 /** Índices de celdas por forma. Funciones puras usadas por las clases de patrón. */
 
+import { randomInt } from 'node:crypto'
+
 export function rowIndices(size: number): number[][] {
   return Array.from({ length: size }, (_, r) =>
     Array.from({ length: size }, (_, c) => r * size + c),
@@ -181,7 +183,7 @@ export function crownIndices(size: number): number[][] {
 
 export function shuffleInPlace<T>(items: T[]): T[] {
   for (let i = items.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
+    const j = randomInt(i + 1)
     const a = items[i]
     const b = items[j]
     if (a === undefined || b === undefined) continue

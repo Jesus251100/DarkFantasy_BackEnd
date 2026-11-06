@@ -15,8 +15,15 @@ const solicitarCodigo = new SolicitarCodigo(new CorreoSmtp())
 const correoSchema = z
   .string()
   .trim()
-  .min(3)
-  .refine((v) => v.includes('@'), 'Correo inválido')
+  .email('Correo inválido')
+  .max(254)
+
+const CLAVE_ALFANUMERICA = /^(?=.*\p{L})(?=.*\p{N})/u
+const claveSchema = z
+  .string()
+  .min(8, 'La contraseña debe tener al menos 8 caracteres.')
+  .max(128, 'La contraseña no puede superar 128 caracteres.')
+  .regex(CLAVE_ALFANUMERICA, 'La contraseña debe incluir al menos una letra y un número.')
 
 const solicitarSchema = z.object({
   correo: correoSchema,
@@ -25,10 +32,10 @@ const solicitarSchema = z.object({
 const registroSchema = z.object({
   correo: correoSchema,
   confirmarCorreo: correoSchema,
-  clave: z.string().min(12).max(128),
+  clave: claveSchema,
   codigo: z.string().regex(/^\d{6}$/),
   nombre: z.string().trim().min(1).max(40),
-  nacionalidad: z.string().trim().min(2),
+  nacionalidad: z.string().trim().regex(/^[A-Za-z]{2}$/),
   genero: z.enum(['M', 'F']),
   fechaNacimiento: z.string().trim().min(10),
   rol: z.enum(['jugador', 'administrador']).optional(),
@@ -131,7 +138,7 @@ router.post('/olvidar-clave', limitarPeticiones('auth:olvidar-clave', 3, 15 * 60
 const restablecerSchema = z.object({
   correo: correoSchema,
   codigo: z.string().regex(/^\d{6}$/),
-  clave: z.string().min(12).max(128),
+  clave: claveSchema,
 })
 
 router.post('/restablecer-clave', limitarPeticiones('auth:restablecer-clave', 10, 15 * 60 * 1000), async (req, res) => {
@@ -171,6 +178,11 @@ router.post('/register', limitarPeticiones('auth:register', 5, 15 * 60 * 1000), 
     res.status(409).json({ error: 'Ese correo ya está registrado.' })
     return
   }
+  const fechaNacimiento = leerFecha(parsed.data.fechaNacimiento)
+  if (!fechaNacimiento) {
+    res.status(400).json({ error: 'La fecha de nacimiento no es válida.' })
+    return
+  }
   const codigoOk = await consumirCodigo(correo, parsed.data.codigo)
   if (!codigoOk) {
     res.status(401).json({ error: 'Código incorrecto o vencido. Pide uno nuevo.' })
@@ -178,11 +190,6 @@ router.post('/register', limitarPeticiones('auth:register', 5, 15 * 60 * 1000), 
   }
   const rol = 'jugador'
   const nombre = parsed.data.nombre.trim()
-  const fechaNacimiento = leerFecha(parsed.data.fechaNacimiento)
-  if (!fechaNacimiento) {
-    res.status(400).json({ error: 'La fecha de nacimiento no es válida.' })
-    return
-  }
   const usuario = await prisma.usuario.create({
     data: {
       correo,
@@ -272,7 +279,7 @@ router.patch('/perfil', authObligatoria, async (req, res) => {
   }
 
   const correo = parsed.data.correo.trim().toLowerCase()
-  const claveNueva = parsed.data.claveNueva?.trim() ?? ''
+  const claveNueva = parsed.data.claveNueva ?? ''
   const correoCambia = correo !== actual.correo
   if (correoCambia || claveNueva) {
     const claveActual = parsed.data.claveActual ?? ''
@@ -282,8 +289,8 @@ router.patch('/perfil', authObligatoria, async (req, res) => {
       return
     }
   }
-  if (claveNueva && claveNueva.length < 12) {
-    res.status(400).json({ error: 'La contraseña nueva debe tener al menos 12 caracteres.' })
+  if (claveNueva && (claveNueva.length < 8 || !CLAVE_ALFANUMERICA.test(claveNueva))) {
+    res.status(400).json({ error: 'La contraseña nueva debe tener al menos 8 caracteres e incluir letras y números.' })
     return
   }
   if (correoCambia) {

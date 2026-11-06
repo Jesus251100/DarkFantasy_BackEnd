@@ -36,7 +36,13 @@ export class CompletarNivel {
         deltaDiamantes: campania.jugador.diamantes - antesDiamantes,
         detalle: resultado.hint || `Recompensa del nivel ${nivel}`,
       })
-      await this.partidas.registrar(usuarioId, nivel, true)
+      // La recompensa ya quedó guardada en una transacción. Un fallo del historial
+      // no debe provocar que la misma ronda vuelva a otorgar la recompensa.
+      try {
+        await this.partidas.registrar(usuarioId, nivel, true)
+      } catch (error) {
+        console.error('No se pudo guardar el historial de la victoria:', error)
+      }
       return { resultado, campania: datos }
     } catch (error) {
       if (error instanceof OperacionRevertida) return { error: error.message }
