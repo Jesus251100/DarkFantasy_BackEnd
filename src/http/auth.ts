@@ -11,10 +11,20 @@ export type JwtPayload = {
   fechaNacimiento?: Date | null
 }
 
-const secret = () => process.env.JWT_SECRET ?? 'darkfantasy-dev'
+function secret(): string {
+  const value = process.env.JWT_SECRET?.trim()
+  if (!value || value.length < 32 || /^(cambia-esto|darkfantasy-dev|reemplazar)/i.test(value)) {
+    throw new Error('JWT_SECRET debe configurarse con al menos 32 caracteres aleatorios.')
+  }
+  return value
+}
 
 export function firmarToken(payload: JwtPayload): string {
-  return jwt.sign(payload, secret(), { expiresIn: '7d' })
+  return jwt.sign(payload, secret(), { expiresIn: '7d', algorithm: 'HS256' })
+}
+
+export function validarConfiguracionAuth(): void {
+  secret()
 }
 
 export function authObligatoria(req: Request, res: Response, next: NextFunction) {
@@ -25,7 +35,7 @@ export function authObligatoria(req: Request, res: Response, next: NextFunction)
     return
   }
   try {
-    const data = jwt.verify(token, secret()) as JwtPayload
+    const data = jwt.verify(token, secret(), { algorithms: ['HS256'] }) as JwtPayload
     req.usuario = data
     next()
   } catch {

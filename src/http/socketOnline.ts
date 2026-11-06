@@ -8,11 +8,18 @@ import { prisma } from '../infrastructure/prisma'
 import { PrismaPartidasOnlineRepo } from '../infrastructure/PrismaPartidasOnlineRepo'
 import { pagarDiamantesCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
+import { origenPermitido } from './seguridad'
 
 const CUPO_SALA = 4
 const PUNTOS_POR_VICTORIA = 25
 
-const secreto = () => process.env.JWT_SECRET ?? 'darkfantasy-dev'
+function secreto(): string {
+  const value = process.env.JWT_SECRET?.trim()
+  if (!value || value.length < 32 || /^(cambia-esto|darkfantasy-dev|reemplazar)/i.test(value)) {
+    throw new Error('JWT_SECRET debe configurarse con al menos 32 caracteres aleatorios.')
+  }
+  return value
+}
 
 interface Sesion {
   usuarioId: string
@@ -21,7 +28,7 @@ interface Sesion {
 
 export function montarOnline(servidor: HttpServer): Server {
   const io = new Server(servidor, {
-    cors: { origin: true, credentials: true },
+    cors: { origin: origenPermitido, credentials: true },
   })
 
   const repo = new PrismaPartidasOnlineRepo()
@@ -215,7 +222,7 @@ export function montarOnline(servidor: HttpServer): Server {
       return
     }
     try {
-      const data = jwt.verify(token, secreto()) as JwtPayload
+      const data = jwt.verify(token, secreto(), { algorithms: ['HS256'] }) as JwtPayload
       socket.data.sesion = { usuarioId: data.sub, nombre: data.nombre } satisfies Sesion
       next()
     } catch {

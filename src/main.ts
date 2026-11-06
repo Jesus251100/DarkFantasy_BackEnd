@@ -11,17 +11,21 @@ import rutasAuth from './http/rutasAuth'
 import rutasCampania from './http/rutasCampania'
 import rutasAdmin from './http/rutasAdmin'
 import { montarOnline } from './http/socketOnline'
+import { origenPermitido } from './http/seguridad'
+import { validarConfiguracionAuth } from './http/auth'
 
 const app = express()
 const servidor = createServer(app)
 const port = Number(process.env.PORT ?? 3001)
 
+validarConfiguracionAuth()
+
 app.use(
   cors({
-    origin: true,
+    origin: origenPermitido,
   }),
 )
-app.use(express.json())
+app.use(express.json({ limit: '32kb', inflate: false }))
 
 app.get('/', (_req, res) => {
   res.type('html').send(`<!doctype html>

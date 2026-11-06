@@ -93,6 +93,12 @@ Health check: `GET http://127.0.0.1:3001/api/salud`.
 
 ## Variables de entorno (`.env`)
 
+Copia `.env.example` como `.env` y configura los valores reales. `JWT_SECRET` es obligatorio:
+genera al menos 32 caracteres aleatorios y no uses el valor de ejemplo. `ALLOWED_ORIGINS`
+debe contener los orígenes del frontend en producción, separados por coma (por ejemplo,
+`https://juego.example.com`). En desarrollo se permiten `localhost:5173` y `127.0.0.1:5173`.
+El backend no inicia sin un secreto JWT válido.
+
 ```
 DATABASE_URL="postgresql://usuario:clave@host:5432/darkfantasy"
 JWT_SECRET="cadena-secreta"

@@ -7,6 +7,7 @@ import { ObtenerCampania } from '../application/ObtenerCampania'
 import { PrismaCampaniaRepo } from '../infrastructure/PrismaCampaniaRepo'
 import { CorreoSmtp } from '../infrastructure/CorreoSmtp'
 import { SolicitarCodigo, consumirCodigo, restablecerClave } from '../application/SolicitarCodigo'
+import { limitarPeticiones } from './seguridad'
 
 const router = Router()
 const solicitarCodigo = new SolicitarCodigo(new CorreoSmtp())
@@ -24,7 +25,7 @@ const solicitarSchema = z.object({
 const registroSchema = z.object({
   correo: correoSchema,
   confirmarCorreo: correoSchema,
-  clave: z.string().min(4),
+  clave: z.string().min(12).max(128),
   codigo: z.string().regex(/^\d{6}$/),
   nombre: z.string().trim().min(1).max(40),
   nacionalidad: z.string().trim().min(2),
@@ -35,7 +36,7 @@ const registroSchema = z.object({
 
 const loginSchema = z.object({
   correo: correoSchema,
-  clave: z.string().min(1),
+  clave: z.string().min(1).max(128),
   rol: z.enum(['jugador', 'administrador']).optional(),
 })
 
@@ -46,7 +47,7 @@ const perfilSchema = z.object({
   genero: z.enum(['M', 'F']).nullable().optional(),
   fechaNacimiento: z.string().trim().nullable().optional(),
   claveActual: z.string().optional(),
-  claveNueva: z.string().optional(),
+  claveNueva: z.string().max(128).optional(),
 })
 
 function fechaCorta(valor: Date | null | undefined): string | null {
@@ -95,7 +96,7 @@ function datosPublicos(usuario: {
   }
 }
 
-router.post('/solicitar-codigo', async (req, res) => {
+router.post('/solicitar-codigo', limitarPeticiones('auth:solicitar-codigo', 3, 15 * 60 * 1000), async (req, res) => {
   const parsed = solicitarSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Correo inválido.' })
@@ -111,7 +112,7 @@ router.post('/solicitar-codigo', async (req, res) => {
   }
 })
 
-router.post('/olvidar-clave', async (req, res) => {
+router.post('/olvidar-clave', limitarPeticiones('auth:olvidar-clave', 3, 15 * 60 * 1000), async (req, res) => {
   const parsed = solicitarSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Correo inválido.' })
@@ -130,10 +131,10 @@ router.post('/olvidar-clave', async (req, res) => {
 const restablecerSchema = z.object({
   correo: correoSchema,
   codigo: z.string().regex(/^\d{6}$/),
-  clave: z.string().min(4),
+  clave: z.string().min(12).max(128),
 })
 
-router.post('/restablecer-clave', async (req, res) => {
+router.post('/restablecer-clave', limitarPeticiones('auth:restablecer-clave', 10, 15 * 60 * 1000), async (req, res) => {
   const parsed = restablecerSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Correo, código o contraseña inválidos.' })
@@ -153,7 +154,7 @@ router.post('/restablecer-clave', async (req, res) => {
   res.json({ ok: true })
 })
 
-router.post('/register', async (req, res) => {
+router.post('/register', limitarPeticiones('auth:register', 5, 15 * 60 * 1000), async (req, res) => {
   const parsed = registroSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Completa todos los datos: nombre, país, correo, contraseña, género y fecha de nacimiento.' })
@@ -209,7 +210,7 @@ router.post('/register', async (req, res) => {
   })
 })
 
-router.post('/login', async (req, res) => {
+router.post('/login', limitarPeticiones('auth:login', 10, 15 * 60 * 1000), async (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Correo o contraseña inválidos.' })
@@ -281,8 +282,8 @@ router.patch('/perfil', authObligatoria, async (req, res) => {
       return
     }
   }
-  if (claveNueva && claveNueva.length < 4) {
-    res.status(400).json({ error: 'La contraseña nueva debe tener al menos 4 caracteres.' })
+  if (claveNueva && claveNueva.length < 12) {
+    res.status(400).json({ error: 'La contraseña nueva debe tener al menos 12 caracteres.' })
     return
   }
   if (correoCambia) {

@@ -23,6 +23,9 @@ export class CompletarNivel {
   > {
     const campania = await this.cargador.abrir(usuarioId)
     if (!campania) return null
+    if (!campania.estaDesbloqueado(nivel)) {
+      return { error: 'Ese nivel aún no está desbloqueado.' }
+    }
     const antesMonedas = campania.jugador.monedas
     const antesDiamantes = campania.jugador.diamantes
     const resultado = campania.completarNivel(nivel)
