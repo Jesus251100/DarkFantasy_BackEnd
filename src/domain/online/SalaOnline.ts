@@ -31,6 +31,7 @@ export interface VistaSala {
   salaId: string
   estado: EstadoSala
   size: number
+  fondoNivel: number
   winModes: WinMode[]
   metodosVictoria: WinMode[]
   maxNumber: number
@@ -45,6 +46,7 @@ export interface VistaSala {
 export class SalaOnline {
   readonly jugadores: JugadorSala[] = []
   readonly metodoVictoria: WinMode
+  readonly fondoNivel: number
   private readonly patrones: IPatronVictoria[]
   private oraculo: Oraculo
   private estado: EstadoSala = 'waiting'
@@ -58,6 +60,7 @@ export class SalaOnline {
   ) {
     this.metodoVictoria =
       config.winModes[Math.floor(Math.random() * config.winModes.length)] ?? 'row'
+    this.fondoNivel = 1 + Math.floor(Math.random() * 9)
     this.patrones = patronesDesdeModos([this.metodoVictoria])
     this.oraculo = Oraculo.nuevo(config.maxNumber)
   }
@@ -147,6 +150,7 @@ export class SalaOnline {
       salaId: this.id,
       estado: this.estado,
       size: this.config.size,
+      fondoNivel: this.fondoNivel,
       winModes: [this.metodoVictoria],
       metodosVictoria: [...this.config.winModes],
       maxNumber: this.config.maxNumber,
