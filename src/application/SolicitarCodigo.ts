@@ -10,7 +10,7 @@ const ultimaSolicitud = new Map<string, number>()
 export class SolicitarCodigo {
   constructor(private readonly correo: IEnviadorCorreo) {}
 
-  async ejecutar(correoCrudo: string): Promise<{ bandeja?: string }> {
+  async ejecutar(correoCrudo: string): Promise<{ bandeja?: string; expiraEn: string }> {
     const correo = correoCrudo.trim().toLowerCase()
     const existe = await prisma.usuario.findUnique({ where: { correo } })
     if (existe) {
@@ -20,7 +20,7 @@ export class SolicitarCodigo {
   }
 
   /** Código para quien ya tiene cuenta y olvidó la contraseña. */
-  async ejecutarRestablecimiento(correoCrudo: string): Promise<{ bandeja?: string }> {
+  async ejecutarRestablecimiento(correoCrudo: string): Promise<{ bandeja?: string; expiraEn: string }> {
     const correo = correoCrudo.trim().toLowerCase()
     const existe = await prisma.usuario.findUnique({ where: { correo } })
     if (!existe) {
@@ -29,7 +29,10 @@ export class SolicitarCodigo {
     return this.guardarYEnviar(correo, 'clave')
   }
 
-  private async guardarYEnviar(correo: string, motivo: 'registro' | 'clave'): Promise<{ bandeja?: string }> {
+  private async guardarYEnviar(
+    correo: string,
+    motivo: 'registro' | 'clave',
+  ): Promise<{ bandeja?: string; expiraEn: string }> {
     const ahora = Date.now()
     const previa = ultimaSolicitud.get(correo) ?? 0
     if (ahora - previa < ESPERA_MS) {
@@ -38,6 +41,7 @@ export class SolicitarCodigo {
 
     const codigo = randomInt(0, 1_000_000).toString().padStart(6, '0')
     const codigoHash = await bcrypt.hash(codigo, 10)
+    const expiraEn = new Date(ahora + VIDA_MS)
 
     await prisma.codigoVerificacion.updateMany({
       where: { correo, usado: false },
@@ -47,7 +51,7 @@ export class SolicitarCodigo {
       data: {
         correo,
         codigoHash,
-        expiraEn: new Date(ahora + VIDA_MS),
+        expiraEn,
       },
     })
 
@@ -67,7 +71,7 @@ export class SolicitarCodigo {
     }
 
     ultimaSolicitud.set(correo, ahora)
-    return { bandeja: this.correo.bandejaLocal() }
+    return { bandeja: this.correo.bandejaLocal(), expiraEn: expiraEn.toISOString() }
   }
 }
 

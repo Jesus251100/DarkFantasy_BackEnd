@@ -125,7 +125,12 @@ router.post('/solicitar-codigo', limitarPeticiones('auth:solicitar-codigo', 3, 1
   }
   try {
     const resultado = await solicitarCodigo.ejecutar(parsed.data.correo)
-    res.json({ ok: true, correo: parsed.data.correo.trim().toLowerCase(), bandeja: resultado.bandeja })
+    res.json({
+      ok: true,
+      correo: parsed.data.correo.trim().toLowerCase(),
+      bandeja: resultado.bandeja,
+      expiraEn: resultado.expiraEn,
+    })
   } catch (e) {
     const status = e && typeof e === 'object' && 'status' in e ? Number((e as { status: number }).status) : 503
     const error = e instanceof Error ? e.message : 'No se pudo enviar el código.'
@@ -141,7 +146,12 @@ router.post('/olvidar-clave', limitarPeticiones('auth:olvidar-clave', 3, 15 * 60
   }
   try {
     const resultado = await solicitarCodigo.ejecutarRestablecimiento(parsed.data.correo)
-    res.json({ ok: true, correo: parsed.data.correo.trim().toLowerCase(), bandeja: resultado.bandeja })
+    res.json({
+      ok: true,
+      correo: parsed.data.correo.trim().toLowerCase(),
+      bandeja: resultado.bandeja,
+      expiraEn: resultado.expiraEn,
+    })
   } catch (e) {
     const status = e && typeof e === 'object' && 'status' in e ? Number((e as { status: number }).status) : 503
     const error = e instanceof Error ? e.message : 'No se pudo enviar el código.'

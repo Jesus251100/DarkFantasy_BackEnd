@@ -24,8 +24,8 @@ const FASES: Record<number, ConfigFase[]> = {
   9: [{ tamano: 5, maxNumero: 75, cartones: 2, intervaloMs: 2700, modos: ['row', 'column', 'diagonal', 'L', 'O', 'plus', 'X', 'H', 'T', 'arrow', 'diamond', 'zigzag'] }],
   10: [
     { tamano: 5, maxNumero: 75, cartones: 1, intervaloMs: 2600, modos: ['full'] },
-    { tamano: 5, maxNumero: 75, cartones: 2, intervaloMs: 2500, modos: ['zigzag', 'H', 'T', 'arrow'] },
-    { tamano: 6, maxNumero: 90, cartones: 1, intervaloMs: 2400, modos: ['crown', 'diamond'] },
+    { tamano: 5, maxNumero: 75, cartones: 2, intervaloMs: 2500, modos: ['zigzag'] },
+    { tamano: 6, maxNumero: 90, cartones: 1, intervaloMs: 2400, modos: ['crown'] },
   ],
 }
 
