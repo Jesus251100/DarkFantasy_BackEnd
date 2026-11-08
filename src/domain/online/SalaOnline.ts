@@ -10,6 +10,7 @@ export type EstadoSala = 'waiting' | 'playing' | 'finished'
 export interface JugadorSala {
   id: string
   nombre: string
+  avatarUrl: string | null
   socketId: string | null
   esBot: boolean
   conectado: boolean
@@ -20,6 +21,7 @@ export interface JugadorSala {
 export interface JugadorVista {
   id: string
   nombre: string
+  avatarUrl: string | null
   esBot: boolean
   conectado: boolean
   ganador: boolean
@@ -85,10 +87,11 @@ export class SalaOnline {
     return Math.round((Date.now() - this.iniciadaEn) / 1000)
   }
 
-  agregarJugador(id: string, nombre: string, esBot: boolean, socketId: string | null = null): void {
+  agregarJugador(id: string, nombre: string, esBot: boolean, socketId: string | null = null, avatarUrl: string | null = null): void {
     this.jugadores.push({
       id,
       nombre,
+      avatarUrl: esBot ? null : avatarUrl,
       esBot,
       socketId,
       conectado: true,
@@ -152,6 +155,7 @@ export class SalaOnline {
       jugadores: this.jugadores.map((j) => ({
         id: j.id,
         nombre: j.nombre,
+        avatarUrl: j.avatarUrl,
         esBot: j.esBot,
         conectado: j.conectado,
         ganador: j.ganador,

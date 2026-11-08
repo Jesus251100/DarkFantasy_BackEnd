@@ -11,6 +11,7 @@ import type { IRegistroPartidasOnline, ResultadoOnline } from '../domain/online/
 export interface MiembroCola {
   usuarioId: string
   nombre: string
+  avatarUrl: string | null
   socketId: string
 }
 
@@ -43,9 +44,9 @@ export class GestionSalas {
     private readonly config: ConfigOnline = CONFIG_ONLINE,
   ) {}
 
-  entrarCola(usuarioId: string, nombre: string, socketId: string): void {
+  entrarCola(usuarioId: string, nombre: string, socketId: string, avatarUrl: string | null = null): void {
     this.abandonar(usuarioId)
-    this.cola.set(usuarioId, { usuarioId, nombre, socketId })
+    this.cola.set(usuarioId, { usuarioId, nombre, avatarUrl, socketId })
     this.procesarCola()
   }
 
@@ -156,7 +157,7 @@ export class GestionSalas {
     if (humanos.length === 0) return
     const sala = new SalaOnline(randomUUID(), this.config)
     for (const h of humanos) {
-      sala.agregarJugador(h.usuarioId, h.nombre, false, h.socketId)
+      sala.agregarJugador(h.usuarioId, h.nombre, false, h.socketId, h.avatarUrl)
       this.salaDeUsuario.set(h.usuarioId, sala.id)
     }
     if (conBots) {

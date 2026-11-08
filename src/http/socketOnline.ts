@@ -24,6 +24,7 @@ function secreto(): string {
 interface Sesion {
   usuarioId: string
   nombre: string
+  avatarUrl: string | null
 }
 
 export function montarOnline(servidor: HttpServer): Server {
@@ -158,6 +159,7 @@ export function montarOnline(servidor: HttpServer): Server {
     jugadores: espera.miembros.map((miembro) => ({
       id: miembro.usuarioId,
       nombre: miembro.nombre,
+      avatarUrl: miembro.avatarUrl,
     })),
   })
 
@@ -212,10 +214,11 @@ export function montarOnline(servidor: HttpServer): Server {
   const miembroDe = (socketId: string, sesionActual: Sesion): MiembroCola => ({
     usuarioId: sesionActual.usuarioId,
     nombre: sesionActual.nombre,
+    avatarUrl: sesionActual.avatarUrl,
     socketId,
   })
 
-  io.use((socket, next) => {
+  io.use(async (socket, next) => {
     const token = (socket.handshake.auth?.token as string | undefined) ?? ''
     if (!token) {
       next(new Error('Falta el token de sesión.'))
@@ -223,7 +226,15 @@ export function montarOnline(servidor: HttpServer): Server {
     }
     try {
       const data = jwt.verify(token, secreto(), { algorithms: ['HS256'] }) as JwtPayload
-      socket.data.sesion = { usuarioId: data.sub, nombre: data.nombre } satisfies Sesion
+      const usuario = await prisma.usuario.findUnique({
+        where: { id: data.sub },
+        select: { nombre: true, avatarUrl: true },
+      })
+      if (!usuario) {
+        next(new Error('La cuenta de esta sesión ya no existe.'))
+        return
+      }
+      socket.data.sesion = { usuarioId: data.sub, nombre: usuario.nombre, avatarUrl: usuario.avatarUrl } satisfies Sesion
       next()
     } catch {
       next(new Error('Sesión inválida o vencida.'))
@@ -253,11 +264,11 @@ export function montarOnline(servidor: HttpServer): Server {
           const yaEsta = filas.some((fila) => fila.nombre === sesion.nombre)
           const lista = yaEsta
             ? filas
-            : [{ nombre: sesion.nombre, puntos: 0, victorias: 0 }, ...filas]
+            : [{ nombre: sesion.nombre, avatarUrl: sesion.avatarUrl, puntos: 0, victorias: 0 }, ...filas]
           socket.emit('ranking:lista', lista.slice(0, 8))
         })
         .catch(() => {
-          socket.emit('ranking:lista', [{ nombre: sesion.nombre, puntos: 0, victorias: 0 }])
+          socket.emit('ranking:lista', [{ nombre: sesion.nombre, avatarUrl: sesion.avatarUrl, puntos: 0, victorias: 0 }])
         })
     })
 
@@ -365,9 +376,10 @@ export function montarOnline(servidor: HttpServer): Server {
       const miembro: MiembroCola = {
         usuarioId: sesion.usuarioId,
         nombre: sesion.nombre,
+        avatarUrl: sesion.avatarUrl,
         socketId: socket.id,
       }
-      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId)
+      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId, miembro.avatarUrl)
       socket.emit('queue:joined', { usuarioId: sesion.usuarioId })
     })
 
@@ -472,15 +484,21 @@ export function montarOnline(servidor: HttpServer): Server {
   return io
 }
 
-async function listarRanking(): Promise<{ nombre: string; puntos: number; victorias: number }[]> {
+async function listarRanking(): Promise<{ nombre: string; avatarUrl: string | null; puntos: number; victorias: number }[]> {
   const grupos = await prisma.participacionOnline.groupBy({
     by: ['nombre'],
     where: { esBot: false, gano: true },
     _count: { _all: true },
   })
+  const usuarios = await prisma.usuario.findMany({
+    where: { nombre: { in: grupos.map((grupo) => grupo.nombre) } },
+    select: { nombre: true, avatarUrl: true },
+  })
+  const avatares = new Map(usuarios.map((usuario) => [usuario.nombre, usuario.avatarUrl]))
   return grupos
     .map((grupo) => ({
       nombre: grupo.nombre,
+      avatarUrl: avatares.get(grupo.nombre) ?? null,
       victorias: grupo._count._all,
       puntos: grupo._count._all * PUNTOS_POR_VICTORIA,
     }))

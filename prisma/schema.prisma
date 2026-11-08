@@ -12,6 +12,9 @@ model Usuario {
   id                String                 @id @default(uuid())
   correo            String                 @unique
   claveHash         String
+  googleSubject     String?                @unique
+  avatarUrl         String?
+  avatarPersonalizado Boolean              @default(false)
   rol               String
   nombre            String
   nacionalidad      String?

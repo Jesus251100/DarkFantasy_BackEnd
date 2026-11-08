@@ -1,5 +1,7 @@
-import { Router } from 'express'
+import express, { Router } from 'express'
 import bcrypt from 'bcryptjs'
+import { randomBytes } from 'node:crypto'
+import { OAuth2Client } from 'google-auth-library'
 import { z } from 'zod'
 import { prisma } from '../infrastructure/prisma'
 import { authObligatoria, firmarToken } from './auth'
@@ -8,9 +10,11 @@ import { PrismaCampaniaRepo } from '../infrastructure/PrismaCampaniaRepo'
 import { CorreoSmtp } from '../infrastructure/CorreoSmtp'
 import { SolicitarCodigo, consumirCodigo, restablecerClave } from '../application/SolicitarCodigo'
 import { limitarPeticiones } from './seguridad'
+import { almacenAvatares } from '../infrastructure/AlmacenAvatares'
 
 const router = Router()
 const solicitarCodigo = new SolicitarCodigo(new CorreoSmtp())
+const google = new OAuth2Client()
 
 const correoSchema = z
   .string()
@@ -45,6 +49,14 @@ const loginSchema = z.object({
   correo: correoSchema,
   clave: z.string().min(1).max(128),
   rol: z.enum(['jugador', 'administrador']).optional(),
+})
+
+const googleSchema = z.object({
+  idToken: z.string().min(100).max(10000),
+  nombre: z.string().trim().min(1).max(40).optional(),
+  nacionalidad: z.string().regex(/^[A-Za-z]{2}$/).optional(),
+  genero: z.enum(['M', 'F']).optional(),
+  fechaNacimiento: z.string().optional(),
 })
 
 const perfilSchema = z.object({
@@ -91,6 +103,7 @@ function datosPublicos(usuario: {
   nacionalidad: string | null
   genero: string | null
   fechaNacimiento: Date | null
+  avatarUrl: string | null
 }) {
   return {
     id: usuario.id,
@@ -100,6 +113,7 @@ function datosPublicos(usuario: {
     nacionalidad: usuario.nacionalidad,
     genero: usuario.genero,
     fechaNacimiento: fechaCorta(usuario.fechaNacimiento),
+    avatarUrl: usuario.avatarUrl,
   }
 }
 
@@ -217,6 +231,88 @@ router.post('/register', limitarPeticiones('auth:register', 5, 15 * 60 * 1000), 
   })
 })
 
+router.post('/google', limitarPeticiones('auth:google', 10, 15 * 60 * 1000), async (req, res) => {
+  const parsed = googleSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ error: 'No se recibieron los datos necesarios para continuar con Google.' })
+    return
+  }
+  const audience = process.env.GOOGLE_CLIENT_ID?.trim()
+  if (!audience) {
+    res.status(503).json({ error: 'El acceso con Google todavía no está configurado en el servidor.' })
+    return
+  }
+  const ticket = await google.verifyIdToken({ idToken: parsed.data.idToken, audience }).catch(() => null)
+  if (!ticket) {
+    res.status(401).json({ error: 'La sesión de Google no es válida o venció. Inténtalo otra vez.' })
+    return
+  }
+  const identidad = ticket.getPayload()
+  if (!identidad?.sub || !identidad.email || identidad.email_verified !== true) {
+    res.status(401).json({ error: 'Google no pudo confirmar esta cuenta.' })
+    return
+  }
+    const correo = identidad.email.trim().toLowerCase()
+    const dominioWorkspace = Boolean(identidad.hd)
+    const correoGoogleAutoritativo = correo.endsWith('@gmail.com') || dominioWorkspace
+    if (!correoGoogleAutoritativo) {
+      res.status(403).json({ error: 'Ese correo de Google requiere primero la verificación normal por correo.' })
+      return
+    }
+
+    let usuario = await prisma.usuario.findUnique({ where: { googleSubject: identidad.sub } })
+    if (usuario) {
+      if (!usuario.avatarPersonalizado && identidad.picture) {
+        usuario = await prisma.usuario.update({
+          where: { id: usuario.id },
+          data: { avatarUrl: identidad.picture },
+        })
+      }
+    } else {
+      usuario = await prisma.usuario.findUnique({ where: { correo } })
+      if (usuario) {
+        usuario = await prisma.usuario.update({
+          where: { id: usuario.id },
+          data: {
+            googleSubject: identidad.sub,
+            ...(!usuario.avatarPersonalizado && identidad.picture ? { avatarUrl: identidad.picture } : {}),
+          },
+        })
+      } else {
+        const fechaNacimiento = parsed.data.fechaNacimiento ? leerFecha(parsed.data.fechaNacimiento) : null
+        if (!parsed.data.nombre || !parsed.data.nacionalidad || !parsed.data.genero || !fechaNacimiento) {
+          res.status(400).json({ error: 'Para crear la cuenta, completa nombre, país, género y fecha de nacimiento en el formulario.' })
+          return
+        }
+        usuario = await prisma.usuario.create({
+          data: {
+            correo,
+            claveHash: await bcrypt.hash(randomBytes(32).toString('hex'), 10),
+            googleSubject: identidad.sub,
+            avatarUrl: identidad.picture ?? null,
+            rol: 'jugador',
+            nombre: parsed.data.nombre,
+            nacionalidad: parsed.data.nacionalidad.toLowerCase(),
+            genero: parsed.data.genero,
+            fechaNacimiento,
+            progreso: { create: {} },
+          },
+        })
+      }
+    }
+
+    const token = firmarToken({
+      sub: usuario.id,
+      correo: usuario.correo,
+      rol: usuario.rol as 'jugador' | 'administrador',
+      nombre: usuario.nombre,
+      nacionalidad: usuario.nacionalidad ?? undefined,
+      genero: usuario.genero ?? undefined,
+      fechaNacimiento: usuario.fechaNacimiento ?? undefined,
+    })
+  res.json({ token, usuario: datosPublicos(usuario) })
+})
+
 router.post('/login', limitarPeticiones('auth:login', 10, 15 * 60 * 1000), async (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
@@ -265,6 +361,47 @@ router.get('/me', authObligatoria, async (req, res) => {
     campania,
   })
 })
+
+router.put(
+  '/perfil/avatar',
+  authObligatoria,
+  limitarPeticiones('auth:avatar', 10, 15 * 60 * 1000),
+  express.raw({ type: ['image/jpeg', 'image/png', 'image/webp'], limit: '5mb', inflate: false }),
+  async (req, res) => {
+    if (!Buffer.isBuffer(req.body)) {
+      res.status(415).json({ error: 'Envía una imagen JPG, PNG o WebP.' })
+      return
+    }
+    const id = req.usuario!.sub
+    const actual = await prisma.usuario.findUnique({ where: { id }, select: { avatarUrl: true } })
+    if (!actual) {
+      res.status(404).json({ error: 'Usuario no encontrado.' })
+      return
+    }
+    let nuevaUrl: string | null = null
+    try {
+      nuevaUrl = await almacenAvatares.guardar(id, req.headers['content-type'] ?? '', req.body)
+      const usuario = await prisma.usuario.update({
+        where: { id },
+        data: { avatarUrl: nuevaUrl, avatarPersonalizado: true },
+      })
+      try {
+        await almacenAvatares.borrar(actual.avatarUrl)
+      } catch (error) {
+        console.warn('No se pudo retirar el avatar anterior:', error instanceof Error ? error.message : 'error desconocido')
+      }
+      res.json({ usuario: datosPublicos(usuario) })
+    } catch (error) {
+      if (nuevaUrl) {
+        try { await almacenAvatares.borrar(nuevaUrl) } catch { /* limpia en otra ocasión */ }
+      }
+      const status = error && typeof error === 'object' && 'status' in error ? Number((error as { status: number }).status) : 503
+      res.status(Number.isFinite(status) ? status : 503).json({
+        error: error instanceof Error ? error.message : 'No se pudo guardar la imagen.',
+      })
+    }
+  },
+)
 
 router.patch('/perfil', authObligatoria, async (req, res) => {
   const parsed = perfilSchema.safeParse(req.body)
