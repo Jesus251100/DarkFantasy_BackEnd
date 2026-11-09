@@ -39,7 +39,7 @@ export const CONFIG_ONLINE: ConfigOnline = {
   revealDelayMs: 10000,
   minPlayers: 2,
   maxPlayers: 4,
-  fillWithBotsAfterMs: 10_000,
+  fillWithBotsAfterMs: 60_000,
   botClaimDelayMs: 900,
 }
 
@@ -50,6 +50,4 @@ export const NOMBRES_BOT = [
   'Bruja Envidia',
   'Dragón Ancestral',
   'Santo Espada',
-  'Jhon Blacked',
-  'Noob Master',
 ]

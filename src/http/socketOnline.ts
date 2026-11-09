@@ -9,6 +9,7 @@ import { PrismaPartidasOnlineRepo } from '../infrastructure/PrismaPartidasOnline
 import { pagarDiamantesCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
 import { origenPermitido } from './seguridad'
+import { RECARGA_BOOSTER_MS } from '../domain/online/efectosBooster'
 
 const CUPO_SALA = 4
 const PUNTOS_POR_VICTORIA = 25
@@ -35,6 +36,7 @@ export function montarOnline(servidor: HttpServer): Server {
   const repo = new PrismaPartidasOnlineRepo()
 
   const sesiones = new Map<string, Sesion>()
+  const recargasBooster = new Map<string, number>()
 
   const emitirVista = (usuarioId: string, socketId: string, sala: SalaOnline, evento: string) => {
     io.to(socketId).emit(evento, sala.vistaPara(usuarioId))
@@ -66,6 +68,9 @@ export function montarOnline(servidor: HttpServer): Server {
         ganadorNombre: ganador?.nombre ?? null,
       })
       io.in(sala.id).socketsLeave(sala.id)
+    },
+    onRankingActualizado() {
+      void listarRanking().then((filas) => io.to('lobby-online').emit('ranking:lista', filas.slice(0, 8)))
     },
     onRechazo(socketId, mensaje) {
       io.to(socketId).emit('claim:rejected', { mensaje })
@@ -261,14 +266,10 @@ export function montarOnline(servidor: HttpServer): Server {
     socket.on('ranking:pedir', () => {
       void listarRanking()
         .then((filas) => {
-          const yaEsta = filas.some((fila) => fila.nombre === sesion.nombre)
-          const lista = yaEsta
-            ? filas
-            : [{ nombre: sesion.nombre, avatarUrl: sesion.avatarUrl, puntos: 0, victorias: 0 }, ...filas]
-          socket.emit('ranking:lista', lista.slice(0, 8))
+          socket.emit('ranking:lista', filas.slice(0, 8))
         })
         .catch(() => {
-          socket.emit('ranking:lista', [{ nombre: sesion.nombre, avatarUrl: sesion.avatarUrl, puntos: 0, victorias: 0 }])
+          socket.emit('ranking:error', { mensaje: 'No se pudo cargar el ranking.' })
         })
     })
 
@@ -298,6 +299,7 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.on('room:create', () => {
       gestion.salirCola(sesion.usuarioId)
+      gestion.abandonar(sesion.usuarioId)
       caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
       salirSalaCaza(sesion.usuarioId)
@@ -327,6 +329,7 @@ export function montarOnline(servidor: HttpServer): Server {
         return
       }
       gestion.salirCola(sesion.usuarioId)
+      gestion.abandonar(sesion.usuarioId)
       caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
       salirSalaCaza(sesion.usuarioId)
@@ -354,19 +357,64 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('booster:lanzar', (payload: { boosterId?: number; objetivoId?: string }) => {
+      void (async () => {
+      try {
       const sala = gestion.salaDe(sesion.usuarioId)
+      if (!sala) {
+        socket.emit('booster:rechazo', { mensaje: 'No estás en una partida.' })
+        return
+      }
       const boosterId = Number(payload?.boosterId)
       const objetivoId = String(payload?.objetivoId ?? '')
-      if (!sala || sala.estadoActual !== 'playing') return
-      if (![1, 2, 3, 4].includes(boosterId) || !objetivoId) return
-      const objetivo = sala.jugadores.find((jugador) => jugador.id === objetivoId)
-      if (!objetivo) return
-      io.to(sala.id).emit('booster:vuelo', {
+      const recarga = RECARGA_BOOSTER_MS[boosterId]
+      const objetivo = sala.jugadores.some((jugador) => jugador.id === objetivoId)
+      if (!recarga || !objetivo) {
+        socket.emit('booster:rechazo', { mensaje: 'Booster u objetivo inválido.' })
+        return
+      }
+      const claveRecarga = `${sesion.usuarioId}:${boosterId}`
+      const disponibleEn = recargasBooster.get(claveRecarga) ?? 0
+      if (disponibleEn > Date.now()) {
+        const segundos = Math.ceil((disponibleEn - Date.now()) / 1000)
+        socket.emit('booster:rechazo', { mensaje: `Este booster estará listo en ${segundos}s.` })
+        return
+      }
+      const stockRestante = await cambiarStockBooster(sesion.usuarioId, boosterId, -1)
+      if (stockRestante === null) {
+        socket.emit('booster:rechazo', { mensaje: 'No tienes unidades de este booster en el inventario.' })
+        return
+      }
+      const resultado = sala.lanzarBooster(sesion.usuarioId, objetivoId, boosterId)
+      if (!resultado.ok) {
+        await cambiarStockBooster(sesion.usuarioId, boosterId, 1)
+        socket.emit('booster:rechazo', { mensaje: resultado.error ?? 'Lanzamiento no válido.' })
+        return
+      }
+      recargasBooster.set(claveRecarga, Date.now() + recarga)
+      io.to(sala.id).emit('booster:lanzado', {
         deId: sesion.usuarioId,
         deNombre: sesion.nombre,
         boosterId,
+        stockRestante,
         objetivoId,
+        objetivoNombre: resultado.objetivoNombre,
+        tipo: resultado.tipo,
+        aplicado: resultado.aplicado,
+        bloqueadoPorEscudo: resultado.bloqueadoPorEscudo,
+        hasta: resultado.hasta,
+        restanteMs: resultado.restanteMs,
+        ahora: Date.now(),
+        casillasBloqueadas: resultado.casillasBloqueadas,
+        numerosFalsos: resultado.numerosFalsos,
       })
+      for (const humano of sala.humanos()) {
+        if (humano.socketId) emitirVista(humano.id, humano.socketId, sala, 'room:state')
+      }
+      } catch (error) {
+        console.error('No se pudo procesar el booster online:', error)
+        socket.emit('booster:rechazo', { mensaje: 'No se pudo procesar el booster. Inténtalo de nuevo.' })
+      }
+      })()
     })
 
     socket.on('queue:join', () => {
@@ -379,8 +427,8 @@ export function montarOnline(servidor: HttpServer): Server {
         avatarUrl: sesion.avatarUrl,
         socketId: socket.id,
       }
-      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId, miembro.avatarUrl)
       socket.emit('queue:joined', { usuarioId: sesion.usuarioId })
+      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId, miembro.avatarUrl)
     })
 
     socket.on('queue:leave', () => {
@@ -394,6 +442,7 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.on('dragon:create', () => {
       gestion.salirCola(sesion.usuarioId)
+      gestion.abandonar(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
       caza.salir(sesion.usuarioId)
       salirSalaCaza(sesion.usuarioId)
@@ -425,6 +474,7 @@ export function montarOnline(servidor: HttpServer): Server {
         return
       }
       gestion.salirCola(sesion.usuarioId)
+      gestion.abandonar(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
       caza.salir(sesion.usuarioId)
       salirSalaCaza(sesion.usuarioId)
@@ -457,6 +507,7 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.on('dragon:join', () => {
       gestion.salirCola(sesion.usuarioId)
+      gestion.abandonar(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
       salirSalaCaza(sesion.usuarioId)
       caza.entrar(sesion.usuarioId, sesion.nombre, socket.id)
@@ -484,23 +535,65 @@ export function montarOnline(servidor: HttpServer): Server {
   return io
 }
 
-async function listarRanking(): Promise<{ nombre: string; avatarUrl: string | null; puntos: number; victorias: number }[]> {
+async function cambiarStockBooster(usuarioId: string, boosterId: number, delta: -1 | 1): Promise<number | null> {
+  return prisma.$transaction(async (tx) => {
+    await tx.progreso.upsert({ where: { usuarioId }, update: {}, create: { usuarioId } })
+    const filas = await tx.$queryRaw<{ boosters: unknown }[]>`
+      SELECT "boosters" FROM "Progreso" WHERE "usuarioId" = ${usuarioId} FOR UPDATE
+    `
+    const bruto = filas[0]?.boosters
+    const original = bruto && typeof bruto === 'object' && !Array.isArray(bruto)
+      ? bruto as Record<string, unknown>
+      : {}
+    const stock: Record<string, number> = {}
+    for (const id of [1, 2, 3, 4]) {
+      const cantidad = Number(original[String(id)] ?? 0)
+      stock[String(id)] = Number.isFinite(cantidad) ? Math.max(0, Math.floor(cantidad)) : 0
+    }
+    const clave = String(boosterId)
+    if (delta < 0 && stock[clave] === 0) return null
+    stock[clave] = Math.max(0, (stock[clave] ?? 0) + delta)
+    await tx.progreso.update({ where: { usuarioId }, data: { boosters: stock } })
+    return stock[clave] ?? 0
+  })
+}
+
+async function listarRanking(): Promise<
+  { usuarioId: string; nombre: string; avatarUrl: string | null; puntos: number; victorias: number }[]
+> {
   const grupos = await prisma.participacionOnline.groupBy({
-    by: ['nombre'],
-    where: { esBot: false, gano: true },
+    by: ['usuarioId'],
+    where: { esBot: false, usuarioId: { not: null } },
     _count: { _all: true },
   })
-  const usuarios = await prisma.usuario.findMany({
-    where: { nombre: { in: grupos.map((grupo) => grupo.nombre) } },
-    select: { nombre: true, avatarUrl: true },
+  const victorias = await prisma.participacionOnline.groupBy({
+    by: ['usuarioId'],
+    where: { esBot: false, gano: true, usuarioId: { not: null } },
+    _count: { _all: true },
   })
-  const avatares = new Map(usuarios.map((usuario) => [usuario.nombre, usuario.avatarUrl]))
+  const ids = grupos.flatMap((grupo) => (grupo.usuarioId ? [grupo.usuarioId] : []))
+  if (ids.length === 0) return []
+  const usuarios = await prisma.usuario.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, nombre: true, avatarUrl: true },
+  })
+  const porId = new Map(usuarios.map((usuario) => [usuario.id, usuario]))
+  const victoriasPorId = new Map(
+    victorias.flatMap((grupo) => (grupo.usuarioId ? [[grupo.usuarioId, grupo._count._all] as const] : [])),
+  )
   return grupos
-    .map((grupo) => ({
-      nombre: grupo.nombre,
-      avatarUrl: avatares.get(grupo.nombre) ?? null,
-      victorias: grupo._count._all,
-      puntos: grupo._count._all * PUNTOS_POR_VICTORIA,
-    }))
-    .sort((a, b) => b.puntos - a.puntos)
+    .flatMap((grupo) => {
+      if (!grupo.usuarioId) return []
+      const usuario = porId.get(grupo.usuarioId)
+      if (!usuario) return []
+      const cantidad = victoriasPorId.get(usuario.id) ?? 0
+      return [{
+        usuarioId: usuario.id,
+        nombre: usuario.nombre,
+        avatarUrl: usuario.avatarUrl,
+        victorias: cantidad,
+        puntos: cantidad * PUNTOS_POR_VICTORIA,
+      }]
+    })
+    .sort((a, b) => b.puntos - a.puntos || a.nombre.localeCompare(b.nombre, 'es'))
 }

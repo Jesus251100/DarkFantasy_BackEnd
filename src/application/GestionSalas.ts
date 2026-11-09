@@ -5,6 +5,7 @@ import {
   NOMBRES_BOT,
   type ConfigOnline,
 } from '../domain/online/ConfigOnline'
+import { shuffleInPlace } from '../domain/bingo/geometria'
 import { SalaOnline, type VistaSala } from '../domain/online/SalaOnline'
 import type { IRegistroPartidasOnline, ResultadoOnline } from '../domain/online/IRegistroPartidasOnline'
 
@@ -20,6 +21,7 @@ export interface OyenteSalas {
   onEmparejar(sala: SalaOnline, humanos: MiembroCola[]): void
   onCantar(sala: SalaOnline, numero: number): void
   onTerminar(sala: SalaOnline, ganadorId: string | null): void
+  onRankingActualizado(): void
   /** Un reclamo no válido: avisar solo a ese socket. */
   onRechazo(socketId: string, mensaje: string): void
   /** Aviso a los jugadores en cola (p. ej. no hay suficientes jugadores). */
@@ -115,7 +117,7 @@ export class GestionSalas {
   private procesarCola(): void {
     while (this.cola.size >= this.config.minPlayers) {
       const humanos = this.tomarDeCola(this.config.maxPlayers)
-      this.crearSala(humanos, false)
+      this.crearSala(humanos, true)
     }
     this.revisarTimerRelleno()
   }
@@ -161,8 +163,11 @@ export class GestionSalas {
       this.salaDeUsuario.set(h.usuarioId, sala.id)
     }
     if (conBots) {
+      const perfiles = shuffleInPlace([...NOMBRES_BOT])
+      let siguientePerfil = 0
       while (!sala.llena) {
-        const nombre = NOMBRES_BOT[Math.floor(Math.random() * NOMBRES_BOT.length)] ?? 'Rival'
+        const nombre = perfiles[siguientePerfil] ?? 'Rival de la Niebla'
+        siguientePerfil += 1
         sala.agregarJugador(`bot:${randomUUID()}`, nombre, true)
       }
     }
@@ -196,7 +201,9 @@ export class GestionSalas {
       if (this.botsReclamando.has(jugador.id)) continue
       if (!sala.botCompleta(jugador.id)) continue
       this.botsReclamando.add(jugador.id)
-      const espera = sala.config.botClaimDelayMs + Math.floor(Math.random() * 500)
+      const demoraMinima = Math.max(650, Math.floor(sala.config.botClaimDelayMs * 0.75))
+      const demoraMaxima = Math.max(demoraMinima + 1, sala.config.botClaimDelayMs * 2.5)
+      const espera = demoraMinima + Math.floor(Math.random() * (demoraMaxima - demoraMinima))
       setTimeout(() => {
         this.botsReclamando.delete(jugador.id)
         if (sala.estadoActual !== 'playing') return
@@ -235,6 +242,7 @@ export class GestionSalas {
 
     void this.repo
       .registrar(resultado)
+      .then(() => this.oyente.onRankingActualizado())
       .catch((error: unknown) => {
         const mensaje = error instanceof Error ? error.message : 'error desconocido'
         console.error(`No se pudo guardar la partida online: ${mensaje}`)

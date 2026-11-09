@@ -20,7 +20,14 @@ export class Oraculo {
   }
 
   cantar(): number | null {
-    const n = this.bolsa.sacar()
+    return this.registrar(this.bolsa.sacar())
+  }
+
+  cantarConPreferencias(preferidos: readonly number[], evitados: readonly number[], probabilidad: number): number | null {
+    return this.registrar(this.bolsa.sacarConPreferencias(preferidos, evitados, probabilidad))
+  }
+
+  private registrar(n: number | null): number | null {
     if (n === null) return null
     this.cantadas.push(n)
     this.ultima = n

@@ -10,8 +10,7 @@ export const origenPermitido = (origen: string | undefined, callback: (error: Er
     ? configurados
     : ['http://localhost:5173', 'http://127.0.0.1:5173']
 
-  // Permite localhost o cualquier despliegue que termine en .vercel.app
-  if (!origen || permitidos.includes(origen) || origen.endsWith('.vercel.app')) {
+  if (!origen || permitidos.includes(origen)) {
     callback(null, true)
   } else {
     callback(new Error('Origen no permitido por CORS.'))
