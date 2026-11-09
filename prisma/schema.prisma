@@ -36,6 +36,10 @@ model Progreso {
   completed       Int[]    @default([])
   coins           Int      @default(0)
   diamonds        Int      @default(0)
+  xp              Int      @default(0)
+  rankingPoints   Int      @default(0)
+  rankingInitialized Boolean @default(false)
+  progressionInitialized Boolean @default(false)
   wins            Int      @default(0)
   boosters        Json     @default("{\"1\": 0, \"2\": 0, \"3\": 0, \"4\": 0}")
   actualizadoEn   DateTime @updatedAt

@@ -22,6 +22,8 @@ export interface OyenteSalas {
   onCantar(sala: SalaOnline, numero: number): void
   onTerminar(sala: SalaOnline, ganadorId: string | null): void
   onRankingActualizado(): void
+  onProgresoActualizado(usuarioIds: string[]): void
+  onAbandono(usuarioId: string, salaId: string): void
   /** Un reclamo no válido: avisar solo a ese socket. */
   onRechazo(socketId: string, mensaje: string): void
   /** Aviso a los jugadores en cola (p. ej. no hay suficientes jugadores). */
@@ -155,11 +157,11 @@ export class GestionSalas {
   }
 
   /** Abre una sala con estos jugadores y completa los puestos con bots. */
-  iniciarSala(miembros: MiembroCola[]): void {
+  iniciarSala(miembros: MiembroCola[], rellenarConBots = true): void {
     const vivos = miembros.filter((m) => m.usuarioId && m.socketId)
     if (vivos.length === 0) return
     for (const miembro of vivos) this.abandonar(miembro.usuarioId)
-    this.crearSala(vivos, true)
+    this.crearSala(vivos, rellenarConBots)
   }
 
   vistaDe(usuarioId: string): VistaSala | null {
@@ -302,7 +304,10 @@ export class GestionSalas {
 
     void this.repo
       .registrar(resultado)
-      .then(() => this.oyente.onRankingActualizado())
+      .then(() => {
+        this.oyente.onRankingActualizado()
+        this.oyente.onProgresoActualizado(sala.humanos().map((humano) => humano.id))
+      })
       .catch((error: unknown) => {
         const mensaje = error instanceof Error ? error.message : 'error desconocido'
         console.error(`No se pudo guardar la partida online: ${mensaje}`)
@@ -342,6 +347,7 @@ export class GestionSalas {
     const sala = salaId ? this.salas.get(salaId) : undefined
     const jugador = sala?.jugadores.find((item) => item.id === usuarioId)
     if (!sala || !jugador || jugador.socketId !== socketId) return
+    if (sala.estadoActual === 'playing') this.oyente.onAbandono(usuarioId, sala.id)
     if (jugador.conectado) sala.marcarDesconectado(usuarioId)
     this.salaDeUsuario.delete(usuarioId)
     if (sala.estadoActual === 'playing' && sala.humanosConectados === 0 && !this.tieneDesconexionPendiente(sala)) {

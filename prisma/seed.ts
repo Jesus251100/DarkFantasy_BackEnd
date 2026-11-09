@@ -89,6 +89,18 @@ async function main() {
   await upsertUser('admin@darkfantasy.com', 'admin123', 'administrador', 'Admin', 10)
   await upsertNiveles()
   await upsertReglaTienda()
+  await prisma.$executeRaw`
+    UPDATE "Progreso" p
+    SET "xp" = GREATEST(p."xp", cardinality(p."completed") * 100),
+        "rankingPoints" = COALESCE((
+          SELECT COUNT(*)::int * 25
+          FROM "ParticipacionOnline" po
+          WHERE po."usuarioId" = p."usuarioId" AND po."esBot" = false AND po."gano" = true
+        ), 0),
+        "rankingInitialized" = true,
+        "progressionInitialized" = true
+    WHERE p."progressionInitialized" = false
+  `
   console.log('Usuarios de prueba:')
   console.log('  jugador@darkfantasy.local / jugador123')
   console.log('  jugador@darkfantasy.com / jugador123')

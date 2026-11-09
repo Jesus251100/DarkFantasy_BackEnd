@@ -9,6 +9,7 @@ export interface DatosCampania {
   completed: number[]
   coins: number
   diamonds: number
+  xp: number
   wins: number
   displayName: string
   boosters: StockBoosters
@@ -26,6 +27,7 @@ export function campaniaVacia(): DatosCampania {
     completed: [],
     coins: 0,
     diamonds: 0,
+    xp: 0,
     wins: 0,
     displayName: 'Jugador',
     boosters: { '1': 0, '2': 0, '3': 0, '4': 0 },

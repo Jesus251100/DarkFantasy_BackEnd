@@ -6,7 +6,7 @@ import { GestionSalas, type MiembroCola, type OyenteSalas } from '../application
 import type { SalaOnline } from '../domain/online/SalaOnline'
 import { prisma } from '../infrastructure/prisma'
 import { PrismaPartidasOnlineRepo } from '../infrastructure/PrismaPartidasOnlineRepo'
-import { pagarDiamantesCaza } from '../infrastructure/PrismaRecompensaCaza'
+import { pagarDiamantesCaza, pagarExperienciaCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
 import { origenPermitido } from './seguridad'
 import { RECARGA_BOOSTER_MS } from '../domain/online/efectosBooster'
@@ -72,6 +72,29 @@ export function montarOnline(servidor: HttpServer): Server {
     },
     onRankingActualizado() {
       void listarRanking().then((filas) => io.to('lobby-online').emit('ranking:lista', filas.slice(0, 8)))
+      for (const socket of io.sockets.sockets.values()) {
+        const sesionActual = sesiones.get(socket.id)
+        if (sesionActual) {
+          void repo.obtenerPuntosRanking(sesionActual.usuarioId)
+            .then((puntos) => socket.emit('ranking:perfil', { puntos }))
+            .catch(() => undefined)
+        }
+      }
+    },
+    onProgresoActualizado(usuarioIds) {
+      for (const usuarioId of usuarioIds) {
+        for (const socket of io.sockets.sockets.values()) {
+          if (sesiones.get(socket.id)?.usuarioId === usuarioId) socket.emit('profile:refresh')
+        }
+      }
+    },
+    onAbandono(usuarioId, salaId) {
+      void repo.penalizarAbandono(usuarioId, salaId)
+        .then(() => void listarRanking().then((filas) => io.to('lobby-online').emit('ranking:lista', filas.slice(0, 8))))
+        .catch((error: unknown) => {
+          const mensaje = error instanceof Error ? error.message : 'error desconocido'
+          console.error(`No se pudo penalizar el abandono tras desconexión: ${mensaje}`)
+        })
     },
     onRechazo(socketId, mensaje) {
       io.to(socketId).emit('claim:rejected', { mensaje })
@@ -131,9 +154,12 @@ export function montarOnline(servidor: HttpServer): Server {
       void avisarRuleta(cazadores, diamantes)
     },
     onDerrota(_caceriaId, cazadores, mensaje) {
-      for (const cazador of cazadores) {
-        io.to(cazador.socketId).emit('dragon:fin', { resultado: 'derrota', mensaje })
-      }
+      void pagarExperienciaCaza(cazadores.map((cazador) => cazador.usuarioId), 25).then((pagada) => {
+        for (const cazador of cazadores) {
+          io.to(cazador.socketId).emit('dragon:fin', { resultado: 'derrota', mensaje, xp: pagada ? 25 : 0 })
+          io.to(cazador.socketId).emit('profile:refresh')
+        }
+      })
     },
   }
 
@@ -143,6 +169,7 @@ export function montarOnline(servidor: HttpServer): Server {
     codigo: string
     anfitrionId: string
     miembros: MiembroCola[]
+    completarConBots: boolean
   }
 
   const esperas = new Map<string, Espera>()
@@ -176,7 +203,7 @@ export function montarOnline(servidor: HttpServer): Server {
   }
 
   const codigoNuevo = (): string => {
-    const alfabeto = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    const alfabeto = 'ABCDEFGHJKLMNPQRSTUVWXYZ'
     let codigo = ''
     for (let i = 0; i < 4; i += 1) {
       codigo += alfabeto[Math.floor(Math.random() * alfabeto.length)]
@@ -187,6 +214,7 @@ export function montarOnline(servidor: HttpServer): Server {
   const vistaEspera = (espera: Espera) => ({
     codigo: espera.codigo,
     anfitrionId: espera.anfitrionId,
+    completarConBots: espera.completarConBots,
     jugadores: espera.miembros.map((miembro) => ({
       id: miembro.usuarioId,
       nombre: miembro.nombre,
@@ -323,9 +351,10 @@ export function montarOnline(servidor: HttpServer): Server {
     }
 
     socket.on('ranking:pedir', () => {
-      void listarRanking()
-        .then((filas) => {
+      void Promise.all([listarRanking(), repo.obtenerPuntosRanking(sesion.usuarioId)])
+        .then(([filas, puntos]) => {
           socket.emit('ranking:lista', filas.slice(0, 8))
+          socket.emit('ranking:perfil', { puntos })
         })
         .catch(() => {
           socket.emit('ranking:error', { mensaje: 'No se pudo cargar el ranking.' })
@@ -366,6 +395,7 @@ export function montarOnline(servidor: HttpServer): Server {
         codigo: codigoNuevo(),
         anfitrionId: sesion.usuarioId,
         miembros: [miembroDe(socket.id, sesion)],
+        completarConBots: false,
       }
       esperas.set(espera.codigo, espera)
       esperaDe.set(sesion.usuarioId, espera.codigo)
@@ -411,11 +441,26 @@ export function montarOnline(servidor: HttpServer): Server {
       socket.emit('room:closed')
     })
 
+    socket.on('room:bots', (payload: { habilitado?: boolean }) => {
+      const codigo = esperaDe.get(sesion.usuarioId)
+      const espera = codigo ? esperas.get(codigo) : undefined
+      if (!espera || espera.anfitrionId !== sesion.usuarioId) {
+        socket.emit('room:error', { mensaje: 'Solo el anfitrión puede configurar los bots.' })
+        return
+      }
+      espera.completarConBots = payload?.habilitado === true
+      emitirEspera(espera)
+    })
+
     socket.on('room:start', () => {
       const codigo = esperaDe.get(sesion.usuarioId)
       const espera = codigo ? esperas.get(codigo) : undefined
       if (!espera || espera.anfitrionId !== sesion.usuarioId) {
         socket.emit('room:error', { mensaje: 'Solo quien creó la sala puede empezarla.' })
+        return
+      }
+      if (espera.miembros.length < CUPO_SALA && !espera.completarConBots) {
+        socket.emit('room:error', { mensaje: 'Espera a que se llene la sala o activa el relleno con bots.' })
         return
       }
       const miembros = espera.miembros.map((miembro) => ({ ...miembro }))
@@ -424,15 +469,31 @@ export function montarOnline(servidor: HttpServer): Server {
         esperaDe.delete(miembro.usuarioId)
         cancelarTemporizadorSala(miembro.usuarioId)
       }
-      gestion.iniciarSala(miembros)
+      gestion.iniciarSala(miembros, espera.completarConBots)
       for (const miembro of miembros) {
         if (!io.sockets.sockets.has(miembro.socketId)) gestion.desconectar(miembro.usuarioId, miembro.socketId)
       }
     })
 
     socket.on('game:leave', (ack?: () => void) => {
-      gestion.abandonar(sesion.usuarioId)
-      if (typeof ack === 'function') ack()
+      void (async () => {
+        const sala = gestion.salaDe(sesion.usuarioId)
+        const correspondePenalizacion = sala?.estadoActual === 'playing'
+        try {
+          if (sala && correspondePenalizacion) await repo.penalizarAbandono(sesion.usuarioId, sala.id)
+        } catch (error) {
+          const mensaje = error instanceof Error ? error.message : 'error desconocido'
+          console.error(`No se pudo registrar la penalización por abandono: ${mensaje}`)
+        } finally {
+          gestion.abandonar(sesion.usuarioId)
+          if (typeof ack === 'function') ack()
+          void repo.obtenerPuntosRanking(sesion.usuarioId)
+            .then((puntos) => socket.emit('ranking:perfil', { puntos }))
+            .catch(() => undefined)
+          socket.emit('profile:refresh')
+          void listarRanking().then((filas) => io.to('lobby-online').emit('ranking:lista', filas.slice(0, 8)))
+        }
+      })()
     })
 
     socket.on('booster:lanzar', (payload: { boosterId?: number; objetivoId?: string }) => {
@@ -529,6 +590,7 @@ export function montarOnline(servidor: HttpServer): Server {
         codigo: codigoNuevo(),
         anfitrionId: sesion.usuarioId,
         miembros: [miembroDe(socket.id, sesion)],
+        completarConBots: false,
       }
       salasCaza.set(sala.codigo, sala)
       cazaDe.set(sesion.usuarioId, sala.codigo)
@@ -667,7 +729,7 @@ async function listarRanking(): Promise<
   if (ids.length === 0) return []
   const usuarios = await prisma.usuario.findMany({
     where: { id: { in: ids } },
-    select: { id: true, nombre: true, avatarUrl: true },
+    select: { id: true, nombre: true, avatarUrl: true, progreso: { select: { rankingPoints: true } } },
   })
   const porId = new Map(usuarios.map((usuario) => [usuario.id, usuario]))
   const victoriasPorId = new Map(
@@ -684,7 +746,7 @@ async function listarRanking(): Promise<
         nombre: usuario.nombre,
         avatarUrl: usuario.avatarUrl,
         victorias: cantidad,
-        puntos: cantidad * PUNTOS_POR_VICTORIA,
+        puntos: usuario.progreso?.rankingPoints ?? cantidad * PUNTOS_POR_VICTORIA,
       }]
     })
     .sort((a, b) => b.puntos - a.puntos || a.nombre.localeCompare(b.nombre, 'es'))

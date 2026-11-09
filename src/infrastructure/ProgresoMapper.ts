@@ -13,6 +13,7 @@ export function progresoADatos(row: Progreso, nombre: string): DatosCampania {
     completed: [...row.completed],
     coins: row.coins,
     diamonds: row.diamonds,
+    xp: row.xp,
     wins: row.wins,
     displayName: nombre,
     boosters: { '1': 0, '2': 0, '3': 0, '4': 0, ...boosters },
@@ -25,6 +26,8 @@ export function datosAProgreso(datos: DatosCampania) {
     completed: datos.completed,
     coins: datos.coins,
     diamonds: datos.diamonds,
+    xp: datos.xp,
+    progressionInitialized: true,
     wins: datos.wins,
     boosters: datos.boosters,
   }
