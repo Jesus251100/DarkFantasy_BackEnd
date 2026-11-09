@@ -4,6 +4,7 @@ import { CargadorCampania } from './CargadorCampania'
 
 export interface LogroVista extends DefinicionLogro {
   desbloqueado: boolean
+  progresoActual: number
 }
 
 /** Catálogo de logros con el estado real del jugador. */
@@ -21,9 +22,13 @@ export class ListarLogros {
     if (!campania) return null
     const completados = new Set(campania.completed)
     const eventos = new Set(await this.campanias.listarCodigosLogro(usuarioId))
-    return LOGROS.map((logro) => ({
-      ...logro,
-      desbloqueado: logro.nivel === null ? eventos.has(logro.codigo) : completados.has(logro.nivel),
-    }))
+    const victoriasOnline = await this.campanias.contarVictoriasOnline(usuarioId)
+    return LOGROS.map((logro) => {
+      const objetivo = logro.objetivo ?? 1
+      const progresoActual = logro.codigo === 'racha-online'
+        ? Math.min(objetivo, victoriasOnline)
+        : ((logro.nivel === null ? eventos.has(logro.codigo) : completados.has(logro.nivel)) ? objetivo : 0)
+      return { ...logro, progresoActual, desbloqueado: progresoActual >= objetivo }
+    })
   }
 }

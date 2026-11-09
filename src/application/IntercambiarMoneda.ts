@@ -1,6 +1,7 @@
 import type { Campania } from '../domain/campania/Campania'
+import { MONEDAS_POR_DIAMANTE } from '../domain/campania/ReglasIntercambio'
 
-const RATIO = 50
+const RATIO = MONEDAS_POR_DIAMANTE
 
 export class IntercambiarMoneda {
   constructor(private readonly campania: Campania) {}

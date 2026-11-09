@@ -10,6 +10,7 @@ export interface DefinicionLogro {
   imagen: string
   monedas: number
   diamantes: number
+  objetivo?: number
 }
 
 /** Recompensa extra del logro, sumada a la del nivel. */
@@ -26,6 +27,12 @@ export const LOGROS: readonly DefinicionLogro[] = [
   { nivel: 10, codigo: 'nivel-10', nombre: 'Completa el nivel 10', imagen: 'level10.gif', monedas: 1500, diamantes: 40 },
   { nivel: null, codigo: 'primer-booster', nombre: 'Primer booster usado', imagen: 'freeze.png', monedas: 100, diamantes: 0 },
   { nivel: null, codigo: 'primera-victoria-online', nombre: 'Primera victoria online', imagen: 'dragon.png', monedas: 200, diamantes: 0 },
+  { nivel: null, codigo: 'golpe-de-suerte', nombre: 'Golpe de suerte', imagen: 'goodluck 2.png', monedas: 100, diamantes: 0 },
+  { nivel: null, codigo: 'manos-de-hielo', nombre: 'Manos de hielo', imagen: 'freeze.png', monedas: 150, diamantes: 0 },
+  { nivel: null, codigo: 'saboteador', nombre: 'Saboteador', imagen: 'sabotage 2.png', monedas: 150, diamantes: 0 },
+  { nivel: null, codigo: 'escudo-perfecto', nombre: 'Escudo perfecto', imagen: 'shield 1.png', monedas: 200, diamantes: 0 },
+  { nivel: null, codigo: 'cazadragones', nombre: 'Cazadragones', imagen: 'dragon.png', monedas: 300, diamantes: 10 },
+  { nivel: null, codigo: 'racha-online', nombre: 'Cinco victorias online', imagen: 'level10.gif', monedas: 300, diamantes: 0, objetivo: 5 },
 ]
 
 const POR_NIVEL = new Map(LOGROS.map((logro) => [logro.nivel, logro]))

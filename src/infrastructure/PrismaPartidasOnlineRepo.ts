@@ -4,6 +4,7 @@ import type {
   ResultadoOnline,
 } from '../domain/online/IRegistroPartidasOnline'
 import { prisma } from './prisma'
+import { otorgarLogro } from './otorgarLogro'
 
 /** Monedas otorgadas al ganador humano de una partida online. */
 export const RECOMPENSA_VICTORIA_ONLINE = 25
@@ -148,18 +149,11 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
           },
         })
         if (gano && victoriaOnlineValida) {
-          const logro = await tx.logroUsuario.createMany({
-            data: [{ usuarioId: jugador.id, codigo: 'primera-victoria-online' }], skipDuplicates: true,
+          if (await otorgarLogro(tx, jugador.id, 'primera-victoria-online')) recompensaMonedas += 200
+          const victoriasOnline = await tx.participacionOnline.count({
+            where: { usuarioId: jugador.id, esBot: false, gano: true },
           })
-          if (logro.count > 0) {
-            const premiado = await tx.progreso.update({ where: { usuarioId: jugador.id }, data: { coins: { increment: 200 } } })
-            recompensaMonedas += 200
-            await tx.historialTransaccion.create({ data: {
-              usuarioId: jugador.id, tipo: 'recompensa', deltaMonedas: 200, deltaDiamantes: 0,
-              monedasDespues: premiado.coins, diamantesDespues: premiado.diamonds,
-              detalle: 'Logro Primera victoria online: +200 monedas',
-            } })
-          }
+          if (victoriasOnline >= 5 && await otorgarLogro(tx, jugador.id, 'racha-online')) recompensaMonedas += 300
         }
       }
       return { recompensaMonedas }

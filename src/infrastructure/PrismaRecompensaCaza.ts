@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { otorgarLogro } from './otorgarLogro'
 
 export async function pagarExperienciaCaza(usuarioIds: string[], xp: number): Promise<boolean> {
   try {
@@ -34,7 +35,7 @@ export async function pagarExperienciaCaza(usuarioIds: string[], xp: number): Pr
 export async function pagarDiamantesCaza(usuarioIds: string[], diamantes: number): Promise<boolean> {
   try {
     await prisma.$transaction(async (tx) => {
-      for (const usuarioId of usuarioIds) {
+      for (const usuarioId of [...new Set(usuarioIds)]) {
         const progreso = await tx.progreso.upsert({
           where: { usuarioId },
           update: { diamonds: { increment: diamantes }, xp: { increment: 100 }, progressionInitialized: true },
@@ -51,6 +52,7 @@ export async function pagarDiamantesCaza(usuarioIds: string[], diamantes: number
             detalle: 'Caza de dragones: +100 XP',
           },
         })
+        await otorgarLogro(tx, usuarioId, 'cazadragones')
       }
     })
     return true
