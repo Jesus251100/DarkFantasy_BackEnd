@@ -104,7 +104,11 @@ DATABASE_URL="postgresql://usuario:clave@host:5432/darkfantasy"
 JWT_SECRET="cadena-secreta"
 PORT=3001
 
-# Correo (opcional; en Docker por defecto usa Mailpit)
+# Correo por HTTPS (recomendado para Render gratuito; requiere un dominio verificado en Resend)
+RESEND_API_KEY=
+RESEND_FROM="Dark Fantasy <no-reply@tu-dominio-verificado.com>"
+
+# Alternativa SMTP (requiere que el hosting permita conexiones salientes SMTP)
 SMTP_HOST=
 SMTP_PORT=
 SMTP_USER=
@@ -113,7 +117,7 @@ SMTP_SECURE=false
 SMTP_FROM="Dark Fantasy <no-reply@darkfantasy.local>"
 ```
 
-Sin `SMTP_USER`/`SMTP_PASS` los códigos quedan en Mailpit (`http://127.0.0.1:8025`).
+Si defines `RESEND_API_KEY`, el backend envía por HTTPS a Resend y usa `RESEND_FROM`; esta opción evita los puertos SMTP bloqueados por Render gratuito. Sin esa clave se conserva el envío SMTP configurado en `SMTP_HOST`/`SMTP_PORT`.
 
 ## Modelo de datos (Prisma)
 

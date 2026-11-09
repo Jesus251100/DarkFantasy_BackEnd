@@ -60,11 +60,14 @@ export class SolicitarCodigo {
     } catch (e) {
       const detalle = e instanceof Error ? e.message : 'error SMTP'
       const local = Boolean(this.correo.bandejaLocal())
+      const resend = Boolean(process.env.RESEND_API_KEY?.trim())
       throw Object.assign(
         new Error(
-          local
-            ? `No se pudo enviar el correo (${detalle}). ¿Está el servicio de mail de Docker?`
-            : `No se pudo enviar el correo (${detalle}). Revisa SMTP_USER y la contraseña de aplicación de Gmail.`,
+          resend
+            ? `No se pudo enviar el correo con Resend (${detalle}). Revisa RESEND_API_KEY y RESEND_FROM, y verifica el dominio remitente.`
+            : local
+              ? `No se pudo enviar el correo (${detalle}). ¿Está el servicio de mail de Docker?`
+              : `No se pudo enviar el correo (${detalle}). Si el backend está en Render gratuito, usa RESEND_API_KEY y RESEND_FROM: ese plan bloquea los puertos SMTP.`,
         ),
         { status: 503 },
       )

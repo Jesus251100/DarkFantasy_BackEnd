@@ -45,6 +45,7 @@ export interface VistaCaza {
   cazadores: { id: string; nombre: string; gano: boolean }[]
   dragonGano: boolean
   dragonMarcadas: number
+  dragonCarton: BingoCell[]
 }
 
 interface Caceria {
@@ -177,6 +178,10 @@ export class CazaDragones {
         dragonMarcadas: caceria.dragon
           .toSnapshot()
           .filter((celda) => !celda.free && caceria.oraculo.conjunto.has(celda.number)).length,
+        dragonCarton: caceria.dragon.toSnapshot().map((celda) => ({
+          ...celda,
+          marked: celda.free || caceria.oraculo.conjunto.has(celda.number),
+        })),
       })
     }
   }
