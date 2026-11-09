@@ -5,16 +5,21 @@ export const origenPermitido = (origen: string | undefined, callback: (error: Er
     .split(',')
     .map((valor) => valor.trim())
     .filter(Boolean)
+  
   const permitidos = configurados.length
     ? configurados
     : ['http://localhost:5173', 'http://127.0.0.1:5173']
-  if (!origen || permitidos.includes(origen)) callback(null, true)
-  else callback(new Error('Origen no permitido por CORS.'))
+
+  // Permite localhost o cualquier despliegue que termine en .vercel.app
+  if (!origen || permitidos.includes(origen) || origen.endsWith('.vercel.app')) {
+    callback(null, true)
+  } else {
+    callback(new Error('Origen no permitido por CORS.'))
+  }
 }
 
 const ventanas = new Map<string, { inicio: number; cantidad: number }>()
 
-/** Limitador sencillo por proceso. En despliegues con varias réplicas, usar Redis. */
 export function limitarPeticiones(clave: string, maximo: number, ventanaMs: number) {
   return (req: Request, res: Response, next: NextFunction) => {
     const ahora = Date.now()
