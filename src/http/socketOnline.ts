@@ -10,6 +10,7 @@ import { pagarDiamantesCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
 import { origenPermitido } from './seguridad'
 import { RECARGA_BOOSTER_MS } from '../domain/online/efectosBooster'
+import { CONFIG_ONLINE } from '../domain/online/ConfigOnline'
 
 const CUPO_SALA = 4
 const PUNTOS_POR_VICTORIA = 25
@@ -148,6 +149,31 @@ export function montarOnline(servidor: HttpServer): Server {
   const esperaDe = new Map<string, string>()
   const salasCaza = new Map<string, Espera>()
   const cazaDe = new Map<string, string>()
+  const temporizadoresSala = new Map<string, ReturnType<typeof setTimeout>>()
+
+  const cancelarTemporizadorSala = (usuarioId: string) => {
+    const timer = temporizadoresSala.get(usuarioId)
+    if (timer) clearTimeout(timer)
+    temporizadoresSala.delete(usuarioId)
+  }
+
+  const programarRetiroSala = (usuarioId: string, socketId: string) => {
+    cancelarTemporizadorSala(usuarioId)
+    const timer = setTimeout(() => {
+      temporizadoresSala.delete(usuarioId)
+      const codigoEspera = esperaDe.get(usuarioId)
+      const espera = codigoEspera ? esperas.get(codigoEspera) : undefined
+      if (espera?.miembros.some((miembro) => miembro.usuarioId === usuarioId && miembro.socketId === socketId)) {
+        salirEspera(usuarioId)
+      }
+      const codigoCaza = cazaDe.get(usuarioId)
+      const salaCaza = codigoCaza ? salasCaza.get(codigoCaza) : undefined
+      if (salaCaza?.miembros.some((miembro) => miembro.usuarioId === usuarioId && miembro.socketId === socketId)) {
+        salirSalaCaza(usuarioId)
+      }
+    }, CONFIG_ONLINE.reconnectGraceMs)
+    temporizadoresSala.set(usuarioId, timer)
+  }
 
   const codigoNuevo = (): string => {
     const alfabeto = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
@@ -176,6 +202,7 @@ export function montarOnline(servidor: HttpServer): Server {
   }
 
   const salirEspera = (usuarioId: string) => {
+    cancelarTemporizadorSala(usuarioId)
     const codigo = esperaDe.get(usuarioId)
     if (!codigo) return
     const espera = esperas.get(codigo)
@@ -200,6 +227,7 @@ export function montarOnline(servidor: HttpServer): Server {
   }
 
   const salirSalaCaza = (usuarioId: string) => {
+    cancelarTemporizadorSala(usuarioId)
     const codigo = cazaDe.get(usuarioId)
     if (!codigo) return
     const sala = salasCaza.get(codigo)
@@ -253,13 +281,44 @@ export function montarOnline(servidor: HttpServer): Server {
     socket.emit('online:ready', { usuarioId: sesion.usuarioId, nombre: sesion.nombre })
     void socket.join('lobby-online')
 
+    const codigoEspera = esperaDe.get(sesion.usuarioId)
+    const salaEspera = codigoEspera ? esperas.get(codigoEspera) : undefined
+    const miembroEspera = salaEspera?.miembros.find((item) => item.usuarioId === sesion.usuarioId)
+    if (salaEspera && miembroEspera) {
+      cancelarTemporizadorSala(sesion.usuarioId)
+      miembroEspera.socketId = socket.id
+      emitirEspera(salaEspera)
+    }
+
     const codigoCaza = cazaDe.get(sesion.usuarioId)
     if (codigoCaza) {
       const salaCaza = salasCaza.get(codigoCaza)
       const miembroCaza = salaCaza?.miembros.find((item) => item.usuarioId === sesion.usuarioId)
       if (salaCaza && miembroCaza) {
+        cancelarTemporizadorSala(sesion.usuarioId)
         miembroCaza.socketId = socket.id
         emitirSalaCaza(salaCaza)
+      }
+    }
+
+    if (gestion.reconectarCola(sesion.usuarioId, socket.id)) {
+      socket.emit('queue:joined', { usuarioId: sesion.usuarioId, reconectada: true })
+    }
+    const partidaAntesDeReconectar = gestion.salaDe(sesion.usuarioId)
+    const jugadorAntesDeReconectar = partidaAntesDeReconectar?.jugadores.find((item) => item.id === sesion.usuarioId)
+    const estabaDesconectado = jugadorAntesDeReconectar ? !jugadorAntesDeReconectar.conectado : false
+    const partidaReanudada = gestion.reconectarPartida(sesion.usuarioId, socket.id)
+    if (partidaReanudada) {
+      void socket.join(partidaReanudada.id)
+      socket.emit('match:found', { salaId: partidaReanudada.id, reconectada: true })
+      emitirVista(sesion.usuarioId, socket.id, partidaReanudada, 'room:state')
+      if (estabaDesconectado) {
+        io.to(partidaReanudada.id).emit('game:connection-resumed', { nombre: sesion.nombre })
+        for (const humano of partidaReanudada.humanos()) {
+          if (humano.socketId && humano.socketId !== socket.id && humano.conectado) {
+            emitirVista(humano.id, humano.socketId, partidaReanudada, 'room:state')
+          }
+        }
       }
     }
 
@@ -315,12 +374,21 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.on('room:join', (payload: { codigo?: string }) => {
       const codigo = String(payload?.codigo ?? '').trim().toUpperCase()
+      const partidaActual = gestion.salaDe(sesion.usuarioId)
+      if (partidaActual) {
+        socket.emit('match:found', { salaId: partidaActual.id, reconectada: true })
+        emitirVista(sesion.usuarioId, socket.id, partidaActual, 'room:state')
+        return
+      }
       const espera = esperas.get(codigo)
       if (!espera) {
         socket.emit('room:error', { mensaje: 'Esa sala no existe.' })
         return
       }
-      if (espera.miembros.some((miembro) => miembro.usuarioId === sesion.usuarioId)) {
+      const miembroExistente = espera.miembros.find((miembro) => miembro.usuarioId === sesion.usuarioId)
+      if (miembroExistente) {
+        cancelarTemporizadorSala(sesion.usuarioId)
+        miembroExistente.socketId = socket.id
         emitirEspera(espera)
         return
       }
@@ -352,8 +420,19 @@ export function montarOnline(servidor: HttpServer): Server {
       }
       const miembros = espera.miembros.map((miembro) => ({ ...miembro }))
       esperas.delete(espera.codigo)
-      for (const miembro of miembros) esperaDe.delete(miembro.usuarioId)
+      for (const miembro of miembros) {
+        esperaDe.delete(miembro.usuarioId)
+        cancelarTemporizadorSala(miembro.usuarioId)
+      }
       gestion.iniciarSala(miembros)
+      for (const miembro of miembros) {
+        if (!io.sockets.sockets.has(miembro.socketId)) gestion.desconectar(miembro.usuarioId, miembro.socketId)
+      }
+    })
+
+    socket.on('game:leave', (ack?: () => void) => {
+      gestion.abandonar(sesion.usuarioId)
+      if (typeof ack === 'function') ack()
     })
 
     socket.on('booster:lanzar', (payload: { boosterId?: number; objetivoId?: string }) => {
@@ -501,7 +580,10 @@ export function montarOnline(servidor: HttpServer): Server {
       }
       const miembros = sala.miembros.map((miembro) => ({ ...miembro }))
       salasCaza.delete(sala.codigo)
-      for (const miembro of miembros) cazaDe.delete(miembro.usuarioId)
+      for (const miembro of miembros) {
+        cazaDe.delete(miembro.usuarioId)
+        cancelarTemporizadorSala(miembro.usuarioId)
+      }
       caza.iniciarCon(miembros)
     })
 
@@ -525,10 +607,20 @@ export function montarOnline(servidor: HttpServer): Server {
 
     socket.on('disconnect', () => {
       sesiones.delete(socket.id)
-      salirEspera(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
-      caza.salir(sesion.usuarioId)
-      gestion.abandonar(sesion.usuarioId)
+      if (esperaDe.has(sesion.usuarioId) || cazaDe.has(sesion.usuarioId)) {
+        programarRetiroSala(sesion.usuarioId, socket.id)
+      }
+      if (!cazaDe.has(sesion.usuarioId)) caza.salir(sesion.usuarioId)
+      const salaDesconectada = gestion.desconectar(sesion.usuarioId, socket.id)
+      if (salaDesconectada) {
+        io.to(salaDesconectada.id).emit('game:connection-paused', {
+          nombre: sesion.nombre,
+          graciaMs: CONFIG_ONLINE.reconnectGraceMs,
+        })
+        for (const humano of salaDesconectada.humanos()) {
+          if (humano.socketId && humano.conectado) emitirVista(humano.id, humano.socketId, salaDesconectada, 'room:state')
+        }
+      }
     })
   })
 

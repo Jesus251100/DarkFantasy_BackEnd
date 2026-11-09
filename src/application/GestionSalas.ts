@@ -37,6 +37,10 @@ export class GestionSalas {
   private readonly salas = new Map<string, SalaOnline>()
   private readonly salaDeUsuario = new Map<string, string>()
   private readonly timerCantar = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly deadlineCanto = new Map<string, number>()
+  private readonly restanteCantoPausado = new Map<string, number>()
+  private readonly salasPausadas = new Set<string>()
+  private readonly timersDesconexion = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly botsReclamando = new Set<string>()
   private timerRelleno: ReturnType<typeof setTimeout> | null = null
 
@@ -53,8 +57,53 @@ export class GestionSalas {
   }
 
   salirCola(usuarioId: string): void {
+    this.cancelarTimerDesconexion(usuarioId)
     this.cola.delete(usuarioId)
     this.revisarTimerRelleno()
+  }
+
+  reconectarCola(usuarioId: string, socketId: string): boolean {
+    const miembro = this.cola.get(usuarioId)
+    if (!miembro) return false
+    this.cancelarTimerDesconexion(usuarioId)
+    miembro.socketId = socketId
+    return true
+  }
+
+  reconectarPartida(usuarioId: string, socketId: string): SalaOnline | null {
+    const salaId = this.salaDeUsuario.get(usuarioId)
+    const sala = salaId ? this.salas.get(salaId) : undefined
+    if (!sala) return null
+    this.cancelarTimerDesconexion(usuarioId)
+    sala.marcarConectado(usuarioId, socketId)
+    this.reanudarSiSePuede(sala)
+    return sala
+  }
+
+  desconectar(usuarioId: string, socketId: string): SalaOnline | null {
+    const miembroCola = this.cola.get(usuarioId)
+    if (miembroCola?.socketId === socketId) {
+      this.programarTimerDesconexion(usuarioId, () => {
+        const actual = this.cola.get(usuarioId)
+        if (actual?.socketId === socketId) {
+          this.cola.delete(usuarioId)
+          this.revisarTimerRelleno()
+          return
+        }
+        this.expirarJugadorDesconectado(usuarioId, socketId)
+      })
+      return null
+    }
+
+    const salaId = this.salaDeUsuario.get(usuarioId)
+    const sala = salaId ? this.salas.get(salaId) : undefined
+    const jugador = sala?.jugadores.find((item) => item.id === usuarioId)
+    if (!sala || !jugador || jugador.socketId !== socketId || !jugador.conectado) return null
+
+    sala.marcarDesconectado(usuarioId)
+    this.pausarSala(sala)
+    this.programarTimerDesconexion(usuarioId, () => this.expirarJugadorDesconectado(usuarioId, socketId))
+    return sala
   }
 
   enCola(usuarioId: string): boolean {
@@ -82,6 +131,7 @@ export class GestionSalas {
   }
 
   abandonar(usuarioId: string): void {
+    this.cancelarTimerDesconexion(usuarioId)
     this.cola.delete(usuarioId)
     const salaId = this.salaDeUsuario.get(usuarioId)
     if (!salaId) {
@@ -92,8 +142,10 @@ export class GestionSalas {
     if (!sala) return
     sala.marcarDesconectado(usuarioId)
     this.salaDeUsuario.delete(usuarioId)
-    if (sala.estadoActual === 'playing' && sala.humanosConectados === 0) {
+    if (sala.estadoActual === 'playing' && sala.humanosConectados === 0 && !this.tieneDesconexionPendiente(sala)) {
       this.terminar(sala, null)
+    } else {
+      this.reanudarSiSePuede(sala)
     }
   }
 
@@ -178,12 +230,17 @@ export class GestionSalas {
   }
 
   private programarCanto(sala: SalaOnline, esperaMs: number): void {
-    const timer = setTimeout(() => this.cantar(sala), esperaMs)
+    const timer = setTimeout(() => {
+      this.timerCantar.delete(sala.id)
+      this.deadlineCanto.delete(sala.id)
+      this.cantar(sala)
+    }, esperaMs)
     this.timerCantar.set(sala.id, timer)
+    this.deadlineCanto.set(sala.id, Date.now() + esperaMs)
   }
 
   private cantar(sala: SalaOnline): void {
-    if (sala.estadoActual !== 'playing') return
+    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
     const numero = sala.cantar()
     if (numero === null) {
       this.terminar(sala, null)
@@ -195,7 +252,7 @@ export class GestionSalas {
   }
 
   private reaccionBots(sala: SalaOnline): void {
-    if (sala.estadoActual !== 'playing') return
+    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
     for (const jugador of sala.jugadores) {
       if (!jugador.esBot) continue
       if (this.botsReclamando.has(jugador.id)) continue
@@ -206,7 +263,7 @@ export class GestionSalas {
       const espera = demoraMinima + Math.floor(Math.random() * (demoraMaxima - demoraMinima))
       setTimeout(() => {
         this.botsReclamando.delete(jugador.id)
-        if (sala.estadoActual !== 'playing') return
+        if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
         if (!sala.botCompleta(jugador.id)) return
         this.terminar(sala, jugador.id)
       }, espera)
@@ -220,6 +277,9 @@ export class GestionSalas {
       clearTimeout(timer)
       this.timerCantar.delete(sala.id)
     }
+    this.deadlineCanto.delete(sala.id)
+    this.restanteCantoPausado.delete(sala.id)
+    this.salasPausadas.delete(sala.id)
     const ganador = sala.jugadores.find((j) => j.id === ganadorId) ?? null
     sala.finalizar(ganadorId)
     this.oyente.onTerminar(sala, ganadorId)
@@ -250,6 +310,7 @@ export class GestionSalas {
 
     for (const humano of sala.humanos()) {
       this.salaDeUsuario.delete(humano.id)
+      this.cancelarTimerDesconexion(humano.id)
     }
     this.salas.delete(sala.id)
   }
@@ -259,5 +320,61 @@ export class GestionSalas {
     const jugador = sala?.jugadores.find((j) => j.id === usuarioId)
     const socketId = jugador?.socketId ?? this.cola.get(usuarioId)?.socketId
     if (socketId) this.oyente.onRechazo(socketId, mensaje)
+  }
+
+  private programarTimerDesconexion(usuarioId: string, alVencer: () => void): void {
+    this.cancelarTimerDesconexion(usuarioId)
+    const timer = setTimeout(() => {
+      this.timersDesconexion.delete(usuarioId)
+      alVencer()
+    }, this.config.reconnectGraceMs)
+    this.timersDesconexion.set(usuarioId, timer)
+  }
+
+  private cancelarTimerDesconexion(usuarioId: string): void {
+    const timer = this.timersDesconexion.get(usuarioId)
+    if (timer) clearTimeout(timer)
+    this.timersDesconexion.delete(usuarioId)
+  }
+
+  private expirarJugadorDesconectado(usuarioId: string, socketId: string): void {
+    const salaId = this.salaDeUsuario.get(usuarioId)
+    const sala = salaId ? this.salas.get(salaId) : undefined
+    const jugador = sala?.jugadores.find((item) => item.id === usuarioId)
+    if (!sala || !jugador || jugador.socketId !== socketId) return
+    if (jugador.conectado) sala.marcarDesconectado(usuarioId)
+    this.salaDeUsuario.delete(usuarioId)
+    if (sala.estadoActual === 'playing' && sala.humanosConectados === 0 && !this.tieneDesconexionPendiente(sala)) {
+      this.terminar(sala, null)
+      return
+    }
+    this.reanudarSiSePuede(sala)
+  }
+
+  private tieneDesconexionPendiente(sala: SalaOnline): boolean {
+    return sala.humanos().some((jugador) =>
+      !jugador.conectado && this.salaDeUsuario.get(jugador.id) === sala.id && this.timersDesconexion.has(jugador.id),
+    )
+  }
+
+  private pausarSala(sala: SalaOnline): void {
+    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
+    const timer = this.timerCantar.get(sala.id)
+    if (timer) clearTimeout(timer)
+    this.timerCantar.delete(sala.id)
+    const deadline = this.deadlineCanto.get(sala.id)
+    this.restanteCantoPausado.set(sala.id, deadline ? Math.max(0, deadline - Date.now()) : sala.config.drawIntervalMs)
+    this.deadlineCanto.delete(sala.id)
+    this.salasPausadas.add(sala.id)
+  }
+
+  private reanudarSiSePuede(sala: SalaOnline): void {
+    if (!this.salasPausadas.has(sala.id) || this.tieneDesconexionPendiente(sala)) return
+    this.salasPausadas.delete(sala.id)
+    const restante = this.restanteCantoPausado.get(sala.id) ?? sala.config.drawIntervalMs
+    this.restanteCantoPausado.delete(sala.id)
+    if (sala.estadoActual !== 'playing') return
+    this.programarCanto(sala, restante)
+    this.reaccionBots(sala)
   }
 }

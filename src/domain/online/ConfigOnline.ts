@@ -12,6 +12,8 @@ export interface ConfigOnline {
   maxPlayers: number
   /** Tiempo máximo en cola antes de rellenar con bots. */
   fillWithBotsAfterMs: number
+  /** Ventana para restaurar una sesión tras recargar o perder conexión. */
+  reconnectGraceMs: number
   /** Retardo base con el que un bot canta BINGO. */
   botClaimDelayMs: number
 }
@@ -40,6 +42,7 @@ export const CONFIG_ONLINE: ConfigOnline = {
   minPlayers: 2,
   maxPlayers: 4,
   fillWithBotsAfterMs: 60_000,
+  reconnectGraceMs: 45_000,
   botClaimDelayMs: 900,
 }
 

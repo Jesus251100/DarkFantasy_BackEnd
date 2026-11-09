@@ -58,13 +58,13 @@ app.get('/api/salud', async (_req, res) => {
     res.json({
       ok: true,
       servicio: 'dark-fantasy-api',
-      baseDatos: resumenConexion(),
+      baseDatos: 'conectada',
     })
   } catch {
     res.status(503).json({
       ok: false,
       servicio: 'dark-fantasy-api',
-      error: 'No hay conexión con PostgreSQL. ¿Está docker start darkfantasy-pg?',
+      error: 'No hay conexión con PostgreSQL.',
     })
   }
 })

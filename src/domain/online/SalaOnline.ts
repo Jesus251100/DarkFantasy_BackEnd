@@ -298,6 +298,13 @@ export class SalaOnline {
     if (jugador && !jugador.esBot) jugador.conectado = false
   }
 
+  marcarConectado(jugadorId: string, socketId: string): void {
+    const jugador = this.jugadores.find((j) => j.id === jugadorId)
+    if (!jugador || jugador.esBot) return
+    jugador.socketId = socketId
+    jugador.conectado = true
+  }
+
   humanos(): JugadorSala[] {
     return this.jugadores.filter((j) => !j.esBot)
   }
