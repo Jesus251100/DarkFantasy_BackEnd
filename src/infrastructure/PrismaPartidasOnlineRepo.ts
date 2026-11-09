@@ -116,6 +116,7 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
     return this.db.$transaction(async (tx) => {
       let recompensaMonedas = 0
       const humanos = resultado.jugadores.filter((jugador) => !jugador.esBot && cuentasReales.has(jugador.id))
+      const victoriaOnlineValida = humanos.length >= 1 && resultado.jugadores.length >= 2
       for (const jugador of humanos) {
         await tx.progreso.upsert({ where: { usuarioId: jugador.id }, update: {}, create: { usuarioId: jugador.id } })
         await this.inicializarRanking(tx, jugador.id)
@@ -146,6 +147,20 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
               : `Participación online: +${xpPremio} XP`,
           },
         })
+        if (gano && victoriaOnlineValida) {
+          const logro = await tx.logroUsuario.createMany({
+            data: [{ usuarioId: jugador.id, codigo: 'primera-victoria-online' }], skipDuplicates: true,
+          })
+          if (logro.count > 0) {
+            const premiado = await tx.progreso.update({ where: { usuarioId: jugador.id }, data: { coins: { increment: 200 } } })
+            recompensaMonedas += 200
+            await tx.historialTransaccion.create({ data: {
+              usuarioId: jugador.id, tipo: 'recompensa', deltaMonedas: 200, deltaDiamantes: 0,
+              monedasDespues: premiado.coins, diamantesDespues: premiado.diamonds,
+              detalle: 'Logro Primera victoria online: +200 monedas',
+            } })
+          }
+        }
       }
       return { recompensaMonedas }
     })

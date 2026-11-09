@@ -110,6 +110,11 @@ export class PrismaCampaniaRepo implements IRepositorioCampaniaUsuario {
       creadoEn: fila.creadoEn,
     }))
   }
+
+  async listarCodigosLogro(usuarioId: string): Promise<string[]> {
+    const rows = await this.db.logroUsuario.findMany({ where: { usuarioId }, select: { codigo: true } })
+    return rows.map((row) => row.codigo)
+  }
 }
 
 function esViolacionDeSaldo(error: unknown): boolean {

@@ -530,6 +530,11 @@ export function montarOnline(servidor: HttpServer): Server {
         socket.emit('booster:rechazo', { mensaje: resultado.error ?? 'Lanzamiento no válido.' })
         return
       }
+      const primerBooster = await otorgarLogroBooster(sesion.usuarioId).catch((error) => {
+        console.error('No se pudo guardar el logro de booster:', error)
+        return false
+      })
+      if (primerBooster) socket.emit('profile:refresh')
       recargasBooster.set(claveRecarga, Date.now() + recarga)
       io.to(sala.id).emit('booster:lanzado', {
         deId: sesion.usuarioId,
@@ -709,6 +714,21 @@ async function cambiarStockBooster(usuarioId: string, boosterId: number, delta: 
     stock[clave] = Math.max(0, (stock[clave] ?? 0) + delta)
     await tx.progreso.update({ where: { usuarioId }, data: { boosters: stock } })
     return stock[clave] ?? 0
+  })
+}
+
+async function otorgarLogroBooster(usuarioId: string): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const creado = await tx.logroUsuario.createMany({ data: [{ usuarioId, codigo: 'primer-booster' }], skipDuplicates: true })
+    if (!creado.count) return false
+    await tx.progreso.upsert({ where: { usuarioId }, update: { coins: { increment: 100 } }, create: { usuarioId, coins: 100 } })
+    const progreso = await tx.progreso.findUniqueOrThrow({ where: { usuarioId } })
+    await tx.historialTransaccion.create({ data: {
+      usuarioId, tipo: 'recompensa', deltaMonedas: 100, deltaDiamantes: 0,
+      monedasDespues: progreso.coins, diamantesDespues: progreso.diamonds,
+      detalle: 'Logro Primer booster usado: +100 monedas',
+    } })
+    return true
   })
 }
 

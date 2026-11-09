@@ -45,6 +45,7 @@ interface RondaCampania {
   iniciadaEn: number
   ultimaBolaEn: number
   estado: EstadoRonda
+  bolasDevueltas: Set<number>
 }
 
 interface RunCampania {
@@ -153,6 +154,7 @@ export class PartidasCampania {
       // El frontend solicita la primera bola tras esperar el intervalo completo.
       ultimaBolaEn: ahora - config.intervaloMs,
       estado: 'jugando',
+      bolasDevueltas: new Set(),
     }
     rondas.set(ronda.id, ronda)
     return this.vista(ronda)
@@ -169,6 +171,19 @@ export class PartidasCampania {
     if (numero === null) throw new Error('No quedan bolas por cantar.')
     ronda.ultimaBolaEn = ahora
     return numero
+  }
+
+  devolverBola(usuarioId: string, rondaId: string, numero: number): void {
+    const ronda = this.obtener(usuarioId, rondaId)
+    if (ronda.estado !== 'jugando' || !Number.isInteger(numero) || numero < 1 || numero > ronda.config.maxNumero) {
+      throw new Error('No se puede devolver esta bola.')
+    }
+    if (!ronda.oraculo.yaCanto(numero) || ronda.bolasDevueltas.has(numero) ||
+      !ronda.valoresCartones.some((carton) => carton.includes(numero))) {
+      throw new Error('La bola no pertenece a una casilla válida de esta ronda.')
+    }
+    if (!ronda.oraculo.devolver(numero)) throw new Error('La bola ya fue devuelta.')
+    ronda.bolasDevueltas.add(numero)
   }
 
   comenzarReclamo(usuarioId: string, rondaId: string, cartonIndex: number): RondaCampania | null {

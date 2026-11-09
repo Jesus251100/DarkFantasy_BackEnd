@@ -25,6 +25,13 @@ export class Bolsa {
     return n ?? null
   }
 
+  devolver(numero: number): boolean {
+    if (this.restantes.includes(numero)) return false
+    this.restantes.push(numero)
+    shuffleInPlace(this.restantes)
+    return true
+  }
+
   sacarConPreferencias(preferidos: readonly number[], evitados: readonly number[], probabilidad: number): number | null {
     if (this.restantes.length === 0) return null
     const preferidosSet = new Set(preferidos)

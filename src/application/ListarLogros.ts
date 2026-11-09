@@ -9,8 +9,10 @@ export interface LogroVista extends DefinicionLogro {
 /** Catálogo de logros con el estado real del jugador. */
 export class ListarLogros {
   private readonly cargador: CargadorCampania
+  private readonly campanias: IRepositorioCampaniaUsuario
 
   constructor(campanias: IRepositorioCampaniaUsuario) {
+    this.campanias = campanias
     this.cargador = new CargadorCampania(campanias)
   }
 
@@ -18,9 +20,10 @@ export class ListarLogros {
     const campania = await this.cargador.abrir(usuarioId)
     if (!campania) return null
     const completados = new Set(campania.completed)
+    const eventos = new Set(await this.campanias.listarCodigosLogro(usuarioId))
     return LOGROS.map((logro) => ({
       ...logro,
-      desbloqueado: completados.has(logro.nivel),
+      desbloqueado: logro.nivel === null ? eventos.has(logro.codigo) : completados.has(logro.nivel),
     }))
   }
 }

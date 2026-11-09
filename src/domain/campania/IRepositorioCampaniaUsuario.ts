@@ -36,4 +36,5 @@ export interface IRepositorioCampaniaUsuario {
     movimiento?: MovimientoEconomico,
   ): Promise<DatosCampania>
   listarTransacciones(usuarioId: string, limite?: number): Promise<FilaTransaccion[]>
+  listarCodigosLogro(usuarioId: string): Promise<string[]>
 }

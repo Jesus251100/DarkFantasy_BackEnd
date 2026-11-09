@@ -27,6 +27,18 @@ model Usuario {
   partidas          Partida[]
   participaciones   ParticipacionOnline[]
   progreso          Progreso?
+  logros            LogroUsuario[]
+}
+
+model LogroUsuario {
+  id             String   @id @default(uuid())
+  usuarioId      String
+  codigo         String
+  desbloqueadoEn DateTime @default(now())
+  usuario        Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+
+  @@unique([usuarioId, codigo])
+  @@index([usuarioId])
 }
 
 model Progreso {

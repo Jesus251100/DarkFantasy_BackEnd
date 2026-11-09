@@ -38,6 +38,14 @@ export class Oraculo {
     return this.conjunto.has(n)
   }
 
+  devolver(n: number): boolean {
+    const indice = this.cantadas.indexOf(n)
+    if (indice < 0 || !this.bolsa.devolver(n)) return false
+    this.cantadas.splice(indice, 1)
+    this.ultima = this.cantadas.at(-1) ?? null
+    return true
+  }
+
   get conjunto(): ReadonlySet<number> {
     return new Set(this.cantadas)
   }

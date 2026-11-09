@@ -4,7 +4,7 @@
  * y otorga una recompensa extra (monedas + diamantes).
  */
 export interface DefinicionLogro {
-  nivel: number
+  nivel: number | null
   codigo: string
   nombre: string
   imagen: string
@@ -24,6 +24,8 @@ export const LOGROS: readonly DefinicionLogro[] = [
   { nivel: 8, codigo: 'nivel-8', nombre: 'Completa el nivel 8', imagen: 'level8.gif', monedas: 1100, diamantes: 25 },
   { nivel: 9, codigo: 'nivel-9', nombre: 'Completa el nivel 9', imagen: 'level9.gif', monedas: 1300, diamantes: 30 },
   { nivel: 10, codigo: 'nivel-10', nombre: 'Completa el nivel 10', imagen: 'level10.gif', monedas: 1500, diamantes: 40 },
+  { nivel: null, codigo: 'primer-booster', nombre: 'Primer booster usado', imagen: 'freeze.png', monedas: 100, diamantes: 0 },
+  { nivel: null, codigo: 'primera-victoria-online', nombre: 'Primera victoria online', imagen: 'dragon.png', monedas: 200, diamantes: 0 },
 ]
 
 const POR_NIVEL = new Map(LOGROS.map((logro) => [logro.nivel, logro]))

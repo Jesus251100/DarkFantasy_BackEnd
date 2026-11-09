@@ -104,7 +104,8 @@ export class Campania {
 
     this.completed = [...this.completed, level].sort((a, b) => a - b)
     const reward = Recompensa.deNivel(level)
-    const logro = logroDeNivel(level) ?? null
+    const definicionLogro = logroDeNivel(level)
+    const logro: LogroDesbloqueado | null = definicionLogro ? { ...definicionLogro, nivel: level } : null
     const bono = Recompensa.deLogroNivel(level)
     this.xp += 100
     reward.aplicar(this.jugador)

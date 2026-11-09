@@ -120,6 +120,21 @@ router.post('/rondas/:id/cerrar', (req, res) => {
   }
 })
 
+router.post('/rondas/:id/devolver-bola', (req, res) => {
+  const id = z.string().uuid().safeParse(req.params.id)
+  const body = z.object({ numero: z.number().int().min(1).max(90) }).safeParse(req.body)
+  if (!id.success || !body.success) {
+    res.status(400).json({ error: 'Bola inválida.' })
+    return
+  }
+  try {
+    rondasCampania.devolverBola(req.usuario!.sub, id.data, body.data.numero)
+    res.json({ ok: true })
+  } catch (error) {
+    res.status(409).json({ error: error instanceof Error ? error.message : 'No se pudo devolver la bola.' })
+  }
+})
+
 router.post('/rondas/:id/reclamar', async (req, res) => {
   const id = z.string().uuid().safeParse(req.params.id)
   const parsed = z.object({ cartonIndex: z.number().int().min(0).max(1) }).safeParse(req.body)

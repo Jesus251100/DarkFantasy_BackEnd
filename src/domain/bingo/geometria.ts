@@ -163,21 +163,14 @@ export function fullCardIndices(size: number): number[][] {
 export function crownIndices(size: number): number[][] {
   const set = new Set<number>()
   const last = size - 1
-  for (let c = 0; c < size; c++) {
-    if (c % 2 === 1 || c === 0 || c === last) set.add(c)
-  }
+  const tips = size >= 6 ? [0, Math.floor((size - 1) / 2), last] : [0, last]
+  for (const c of tips) set.add(c)
   for (let c = 0; c < size; c++) set.add(size + c)
-  const mid = Math.floor(size / 2)
-  for (let r = 2; r <= Math.min(3, last); r++) {
-    for (let c = mid - 1; c <= mid + (size >= 6 ? 1 : 0); c++) {
-      if (c >= 0 && c < size) set.add(r * size + c)
-    }
+  for (let r = 2; r < last; r++) {
+    set.add(r * size)
+    set.add(r * size + last)
   }
-  if (size >= 5) {
-    for (let c = 1; c < last; c++) set.add(last * size + c)
-  } else {
-    for (let c = 0; c < size; c++) set.add(last * size + c)
-  }
+  for (let c = 0; c < size; c++) set.add(last * size + c)
   return [[...set]]
 }
 
