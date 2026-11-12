@@ -4,6 +4,7 @@ import { ActualizarNombre } from '../application/ActualizarNombre'
 import { CompletarNivel } from '../application/CompletarNivel'
 import { ComprarBoosterRemoto } from '../application/ComprarBoosterRemoto'
 import { IntercambiarMonedaRemoto } from '../application/IntercambiarMonedaRemoto'
+import { MAX_DIAMANTES_POR_CAMBIO } from '../domain/campania/ReglasIntercambio'
 import { ListarLogros } from '../application/ListarLogros'
 import { ObtenerCampania } from '../application/ObtenerCampania'
 import { PartidasCampania } from '../application/PartidasCampania'
@@ -213,7 +214,10 @@ router.post('/comprar-booster', async (req, res) => {
 
 router.post('/intercambiar', async (req, res) => {
   const parsed = z
-    .object({ modo: z.enum(['diamonds-to-coins', 'coins-to-diamonds']) })
+    .object({
+      modo: z.enum(['diamonds-to-coins', 'coins-to-diamonds']),
+      cantidad: z.number().int().min(1).max(MAX_DIAMANTES_POR_CAMBIO),
+    })
     .safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json({ error: 'Modo de intercambio inválido.' })
@@ -222,6 +226,7 @@ router.post('/intercambiar', async (req, res) => {
   const out = await new IntercambiarMonedaRemoto(campanias).ejecutar(
     req.usuario!.sub,
     parsed.data.modo,
+    parsed.data.cantidad,
   )
   if (!out.ok) {
     res.status(out.error === 'Usuario no encontrado.' ? 404 : 400).json({ error: out.error })

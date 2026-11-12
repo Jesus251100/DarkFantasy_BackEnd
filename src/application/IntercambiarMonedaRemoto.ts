@@ -9,9 +9,10 @@ export class IntercambiarMonedaRemoto {
   async ejecutar(
     usuarioId: string,
     modo: 'diamonds-to-coins' | 'coins-to-diamonds',
+    diamantes: number,
   ): Promise<{ ok: true; campania: DatosCampania } | { ok: false; error: string }> {
     try {
-      return { ok: true, campania: await this.campanias.intercambiar(usuarioId, modo) }
+      return { ok: true, campania: await this.campanias.intercambiar(usuarioId, modo, diamantes) }
     } catch (error) {
       if (error instanceof OperacionRevertida) return { ok: false, error: error.message }
       throw error

@@ -6,7 +6,10 @@ import type {
   MovimientoEconomico,
 } from '../domain/campania/IRepositorioCampaniaUsuario'
 import { OperacionRevertida } from '../domain/campania/OperacionRevertida'
-import { MONEDAS_POR_DIAMANTE } from '../domain/campania/ReglasIntercambio'
+import {
+  MAX_DIAMANTES_POR_CAMBIO,
+  movimientoDeCambio,
+} from '../domain/campania/ReglasIntercambio'
 import { prisma } from './prisma'
 import { datosAProgreso, progresoADatos } from './ProgresoMapper'
 
@@ -94,7 +97,15 @@ export class PrismaCampaniaRepo implements IRepositorioCampaniaUsuario {
     }
   }
 
-  async intercambiar(usuarioId: string, modo: 'diamonds-to-coins' | 'coins-to-diamonds'): Promise<DatosCampania> {
+  async intercambiar(
+    usuarioId: string,
+    modo: 'diamonds-to-coins' | 'coins-to-diamonds',
+    diamantes: number,
+  ): Promise<DatosCampania> {
+    if (!Number.isInteger(diamantes) || diamantes < 1 || diamantes > MAX_DIAMANTES_POR_CAMBIO) {
+      throw new OperacionRevertida('La cantidad de cambio no es válida.')
+    }
+    const cambio = movimientoDeCambio(modo, diamantes)
     return this.db.$transaction(async (tx) => {
       await tx.progreso.upsert({ where: { usuarioId }, update: {}, create: { usuarioId } })
       const filas = await tx.$queryRaw<Array<{ coins: number; diamonds: number }>>`
@@ -102,10 +113,13 @@ export class PrismaCampaniaRepo implements IRepositorioCampaniaUsuario {
       `
       const saldo = filas[0]
       if (!saldo) throw new OperacionRevertida('No se encontró el saldo de esta cuenta.')
-      const deltaMonedas = modo === 'diamonds-to-coins' ? MONEDAS_POR_DIAMANTE : -MONEDAS_POR_DIAMANTE
-      const deltaDiamantes = modo === 'diamonds-to-coins' ? -1 : 1
-      if (saldo.coins + deltaMonedas < 0) throw new OperacionRevertida('No tienes 50 monedas suficientes.')
-      if (saldo.diamonds + deltaDiamantes < 0) throw new OperacionRevertida('No tienes diamantes suficientes.')
+      const { monedas, deltaMonedas, deltaDiamantes } = cambio
+      if (saldo.coins + deltaMonedas < 0) {
+        throw new OperacionRevertida(`No tienes ${monedas} monedas suficientes.`)
+      }
+      if (saldo.diamonds + deltaDiamantes < 0) {
+        throw new OperacionRevertida(`No tienes ${diamantes} diamantes suficientes.`)
+      }
       const progreso = await tx.progreso.update({
         where: { usuarioId },
         data: { coins: saldo.coins + deltaMonedas, diamonds: saldo.diamonds + deltaDiamantes },
@@ -116,7 +130,10 @@ export class PrismaCampaniaRepo implements IRepositorioCampaniaUsuario {
         data: {
           usuarioId, tipo: 'intercambio', deltaMonedas, deltaDiamantes,
           monedasDespues: progreso.coins, diamantesDespues: progreso.diamonds,
-          detalle: modo === 'coins-to-diamonds' ? '50 monedas → 1 diamante' : '1 diamante → 50 monedas',
+          detalle:
+            modo === 'coins-to-diamonds'
+              ? `${monedas} monedas → ${diamantes} diamantes`
+              : `${diamantes} diamantes → ${monedas} monedas`,
         },
       })
       return progresoADatos(progreso, usuario.nombre)

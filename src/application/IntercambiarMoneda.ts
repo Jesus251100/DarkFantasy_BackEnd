@@ -1,25 +1,31 @@
 import type { Campania } from '../domain/campania/Campania'
 import { MONEDAS_POR_DIAMANTE } from '../domain/campania/ReglasIntercambio'
 
-const RATIO = MONEDAS_POR_DIAMANTE
-
 export class IntercambiarMoneda {
   constructor(private readonly campania: Campania) {}
 
-  diamantesAMonedas(): { ok: boolean; error?: string } {
-    if (!this.campania.jugador.gastarDiamantes(1)) {
+  diamantesAMonedas(unidades = 1): { ok: boolean; error?: string } {
+    const n = Math.floor(unidades)
+    if (!Number.isInteger(n) || n < 1) {
+      return { ok: false, error: 'Elige al menos un diamante' }
+    }
+    if (!this.campania.jugador.gastarDiamantes(n)) {
       return { ok: false, error: 'No tienes diamantes suficientes' }
     }
-    this.campania.jugador.ganarMonedas(RATIO)
+    this.campania.jugador.ganarMonedas(n * MONEDAS_POR_DIAMANTE)
     this.campania.persistir()
     return { ok: true }
   }
 
-  monedasADiamantes(): { ok: boolean; error?: string } {
-    if (!this.campania.jugador.gastarMonedas(RATIO)) {
+  monedasADiamantes(unidades = 1): { ok: boolean; error?: string } {
+    const n = Math.floor(unidades)
+    if (!Number.isInteger(n) || n < 1) {
+      return { ok: false, error: 'Elige al menos un diamante' }
+    }
+    if (!this.campania.jugador.gastarMonedas(n * MONEDAS_POR_DIAMANTE)) {
       return { ok: false, error: 'No tienes monedas suficientes' }
     }
-    this.campania.jugador.ganarDiamantes(1)
+    this.campania.jugador.ganarDiamantes(n)
     this.campania.persistir()
     return { ok: true }
   }

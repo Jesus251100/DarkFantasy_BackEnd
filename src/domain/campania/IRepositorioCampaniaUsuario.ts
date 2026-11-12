@@ -35,7 +35,11 @@ export interface IRepositorioCampaniaUsuario {
     datos: DatosCampania,
     movimiento?: MovimientoEconomico,
   ): Promise<DatosCampania>
-  intercambiar(usuarioId: string, modo: 'diamonds-to-coins' | 'coins-to-diamonds'): Promise<DatosCampania>
+  intercambiar(
+    usuarioId: string,
+    modo: 'diamonds-to-coins' | 'coins-to-diamonds',
+    diamantes: number,
+  ): Promise<DatosCampania>
   listarTransacciones(usuarioId: string, limite?: number): Promise<FilaTransaccion[]>
   listarCodigosLogro(usuarioId: string): Promise<string[]>
   contarVictoriasOnline(usuarioId: string): Promise<number>
