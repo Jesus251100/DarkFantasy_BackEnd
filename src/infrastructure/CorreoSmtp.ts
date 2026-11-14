@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer'
-import * as SibApiV3Sdk from '@getbrevo/brevo'
+import { TransactionalEmailsApi, SendSmtpEmail } from '@getbrevo/brevo'
 import type { IEnviadorCorreo } from '../domain/identidad/IEnviadorCorreo'
 
 type SmtpCfg = {
@@ -42,7 +42,7 @@ function smtpConfig(): SmtpCfg {
 
 export class CorreoSmtp implements IEnviadorCorreo {
   async enviarCodigo(correo: string, codigo: string, motivo: 'registro' | 'clave' = 'registro'): Promise<void> {
-    // 1. Si detecta la API de Brevo, usa Brevo (Ideal para producción en Render gratuito)
+    // 1. Si detecta la API de Brevo, usa Brevo (Ideal para Render gratuito)
     const apiKeyBrevo = process.env.BREVO_API_KEY?.trim()
     if (apiKeyBrevo) {
       await enviarConBrevo(correo, codigo, motivo, apiKeyBrevo)
@@ -98,7 +98,7 @@ async function enviarConBrevo(
   motivo: 'registro' | 'clave',
   apiKey: string,
 ): Promise<void> {
-  const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi()
+  const apiInstance = new TransactionalEmailsApi()
   const auth = apiInstance.authentications['apiKey'] as { apiKey: string }
   auth.apiKey = apiKey
 
@@ -107,7 +107,7 @@ async function enviarConBrevo(
 
   const contenido = contenidoCodigo(codigo, motivo)
 
-  const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail({
+  const sendSmtpEmail = new SendSmtpEmail({
     subject: contenido.subject,
     htmlContent: contenido.html,
     textContent: contenido.text,
