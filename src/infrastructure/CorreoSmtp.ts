@@ -1,4 +1,5 @@
 import nodemailer from 'nodemailer'
+import * as SibApiV3Sdk from '@getbrevo/brevo'
 import type { IEnviadorCorreo } from '../domain/identidad/IEnviadorCorreo'
 
 type SmtpCfg = {
@@ -23,7 +24,6 @@ function smtpConfig(): SmtpCfg {
   let host = (process.env.SMTP_HOST ?? '').trim()
   let port = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 0
 
-  // Credenciales reales: no mandar a Mailpit aunque Compose siga apuntando a `mail`.
   if (real && esHostLocal(host)) {
     host = 'smtp.gmail.com'
     port = port === 0 || port === 1025 ? 587 : port
@@ -34,6 +34,7 @@ function smtpConfig(): SmtpCfg {
   const secure = process.env.SMTP_SECURE === 'true' || port === 465
   const from =
     process.env.SMTP_FROM?.trim() ||
+    process.env.SENDER_EMAIL?.trim() ||
     (user ? `Dark Fantasy <${user}>` : 'Dark Fantasy <no-reply@darkfantasy.local>')
 
   return { host, port, secure, user, pass, from, real }
@@ -41,12 +42,14 @@ function smtpConfig(): SmtpCfg {
 
 export class CorreoSmtp implements IEnviadorCorreo {
   async enviarCodigo(correo: string, codigo: string, motivo: 'registro' | 'clave' = 'registro'): Promise<void> {
-    const apiKeyResend = process.env.RESEND_API_KEY?.trim()
-    if (apiKeyResend) {
-      await enviarConResend(correo, codigo, motivo, apiKeyResend)
+    // 1. Si detecta la API de Brevo, usa Brevo (Ideal para producción en Render gratuito)
+    const apiKeyBrevo = process.env.BREVO_API_KEY?.trim()
+    if (apiKeyBrevo) {
+      await enviarConBrevo(correo, codigo, motivo, apiKeyBrevo)
       return
     }
 
+    // 2. Si no, intenta por SMTP tradicional / Local (Mailpit)
     const cfg = smtpConfig()
     const transporte = nodemailer.createTransport({
       host: cfg.host,
@@ -63,7 +66,7 @@ export class CorreoSmtp implements IEnviadorCorreo {
   }
 
   bandejaLocal(): string | undefined {
-    if (process.env.RESEND_API_KEY?.trim()) return undefined
+    if (process.env.BREVO_API_KEY?.trim()) return undefined
     const cfg = smtpConfig()
     if (cfg.real) return undefined
     if (esHostLocal(cfg.host) || cfg.port === 1025) return 'http://127.0.0.1:8025'
@@ -89,29 +92,32 @@ function contenidoCodigo(codigo: string, motivo: 'registro' | 'clave') {
   }
 }
 
-async function enviarConResend(
+async function enviarConBrevo(
   correo: string,
   codigo: string,
   motivo: 'registro' | 'clave',
   apiKey: string,
 ): Promise<void> {
-  const from = process.env.RESEND_FROM?.trim()
-  if (!from) {
-    throw new Error('Configura RESEND_FROM con una dirección de tu dominio verificado en Resend.')
-  }
+  const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi()
+  const auth = apiInstance.authentications['apiKey'] as { apiKey: string }
+  auth.apiKey = apiKey
 
-  const respuesta = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ from, to: correo, ...contenidoCodigo(codigo, motivo) }),
-    signal: AbortSignal.timeout(15_000),
+  const remitenteEmail = process.env.SENDER_EMAIL?.trim() || process.env.SMTP_USER?.trim() || 'totolino4000@gmail.com'
+  const remitenteNombre = process.env.SENDER_NAME?.trim() || 'Dark Fantasy'
+
+  const contenido = contenidoCodigo(codigo, motivo)
+
+  const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail({
+    subject: contenido.subject,
+    htmlContent: contenido.html,
+    textContent: contenido.text,
+    sender: { name: remitenteNombre, email: remitenteEmail },
+    to: [{ email: correo }],
   })
 
-  if (!respuesta.ok) {
-    const detalle = await respuesta.text().catch(() => '')
-    throw new Error(`Resend respondió ${respuesta.status}${detalle ? `: ${detalle.slice(0, 240)}` : ''}.`)
+  try {
+    await apiInstance.sendTransacEmail(sendSmtpEmail)
+  } catch (error) {
+    throw new Error(`Error al enviar correo con Brevo: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
