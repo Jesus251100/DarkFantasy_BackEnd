@@ -1,5 +1,5 @@
 import nodemailer from 'nodemailer'
-import { TransactionalEmailsApi, SendSmtpEmail } from '@getbrevo/brevo'
+import { TransactionalEmailsApi } from '@getbrevo/brevo'
 import type { IEnviadorCorreo } from '../domain/identidad/IEnviadorCorreo'
 
 type SmtpCfg = {
@@ -42,14 +42,12 @@ function smtpConfig(): SmtpCfg {
 
 export class CorreoSmtp implements IEnviadorCorreo {
   async enviarCodigo(correo: string, codigo: string, motivo: 'registro' | 'clave' = 'registro'): Promise<void> {
-    // 1. Si detecta la API de Brevo, usa Brevo (Ideal para Render gratuito)
     const apiKeyBrevo = process.env.BREVO_API_KEY?.trim()
     if (apiKeyBrevo) {
       await enviarConBrevo(correo, codigo, motivo, apiKeyBrevo)
       return
     }
 
-    // 2. Si no, intenta por SMTP tradicional / Local (Mailpit)
     const cfg = smtpConfig()
     const transporte = nodemailer.createTransport({
       host: cfg.host,
@@ -107,13 +105,13 @@ async function enviarConBrevo(
 
   const contenido = contenidoCodigo(codigo, motivo)
 
-  const sendSmtpEmail = new SendSmtpEmail({
+  const sendSmtpEmail = {
     subject: contenido.subject,
     htmlContent: contenido.html,
     textContent: contenido.text,
     sender: { name: remitenteNombre, email: remitenteEmail },
     to: [{ email: correo }],
-  })
+  }
 
   try {
     await apiInstance.sendTransacEmail(sendSmtpEmail)
