@@ -1,5 +1,4 @@
 import nodemailer from 'nodemailer'
-import { TransactionalEmailsApi } from '@getbrevo/brevo'
 import type { IEnviadorCorreo } from '../domain/identidad/IEnviadorCorreo'
 
 type SmtpCfg = {
@@ -96,26 +95,29 @@ async function enviarConBrevo(
   motivo: 'registro' | 'clave',
   apiKey: string,
 ): Promise<void> {
-  const apiInstance = new TransactionalEmailsApi()
-  const auth = apiInstance.authentications['apiKey'] as { apiKey: string }
-  auth.apiKey = apiKey
-
   const remitenteEmail = process.env.SENDER_EMAIL?.trim() || process.env.SMTP_USER?.trim() || 'totolino4000@gmail.com'
   const remitenteNombre = process.env.SENDER_NAME?.trim() || 'Dark Fantasy'
-
   const contenido = contenidoCodigo(codigo, motivo)
 
-  const sendSmtpEmail = {
-    subject: contenido.subject,
-    htmlContent: contenido.html,
-    textContent: contenido.text,
-    sender: { name: remitenteNombre, email: remitenteEmail },
-    to: [{ email: correo }],
-  }
+  const respuesta = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'api-key': apiKey,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+      sender: { name: remitenteNombre, email: remitenteEmail },
+      to: [{ email: correo }],
+      subject: contenido.subject,
+      htmlContent: contenido.html,
+      textContent: contenido.text,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  })
 
-  try {
-    await apiInstance.sendTransacEmail(sendSmtpEmail)
-  } catch (error) {
-    throw new Error(`Error al enviar correo con Brevo: ${error instanceof Error ? error.message : String(error)}`)
+  if (!respuesta.ok) {
+    const detalle = await respuesta.text().catch(() => '')
+    throw new Error(`Brevo respondió ${respuesta.status}${detalle ? `: ${detalle.slice(0, 240)}` : ''}.`)
   }
 }
