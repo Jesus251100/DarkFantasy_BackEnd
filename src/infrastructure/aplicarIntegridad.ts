@@ -44,13 +44,11 @@ BEGIN
       CHECK (nivel >= 1 AND nivel <= 10);
   END IF;
 
-  IF to_regclass('public."HistorialTransaccion"') IS NOT NULL THEN
-    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'historial_tipo_valido') THEN
-      ALTER TABLE "HistorialTransaccion" DROP CONSTRAINT historial_tipo_valido;
-    END IF;
+  IF to_regclass('public."HistorialTransaccion"') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'historial_tipo_valido') THEN
     ALTER TABLE "HistorialTransaccion"
       ADD CONSTRAINT historial_tipo_valido
-      CHECK (tipo IN ('compra', 'intercambio', 'recompensa', 'penalizacion'));
+      CHECK (tipo IN ('compra', 'intercambio', 'recompensa'));
   END IF;
 
   IF to_regclass('public."HistorialTransaccion"') IS NOT NULL

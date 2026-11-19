@@ -1,23 +1,5 @@
 import type { WinMode } from '../bingo/tipos'
 
-export type ModoMesa = 'mesa' | 'pvp' | 'equipos'
-export type CupoMesa = 2 | 4 | 6 | 8
-
-export interface MesaElegida {
-  modo: ModoMesa
-  cupo: CupoMesa
-}
-
-/** Acepta solo las mesas del juego: PvP de 2, o mesa y equipos de 4, 6 u 8. */
-export function mesaValida(modo: unknown, cupo: unknown): MesaElegida | null {
-  const tamaño = Number(cupo)
-  if (modo === 'pvp' && tamaño === 2) return { modo: 'pvp', cupo: 2 }
-  if ((modo === 'mesa' || modo === 'equipos') && (tamaño === 4 || tamaño === 6 || tamaño === 8)) {
-    return { modo, cupo: tamaño }
-  }
-  return null
-}
-
 /** Reglas fijas de una partida online. */
 export interface ConfigOnline {
   size: number
@@ -64,10 +46,6 @@ export const CONFIG_ONLINE: ConfigOnline = {
   botClaimDelayMs: 900,
 }
 
-export function configPara(mesa: MesaElegida, base: ConfigOnline = CONFIG_ONLINE): ConfigOnline {
-  return { ...base, maxPlayers: mesa.cupo, minPlayers: 2 }
-}
-
 export const MENSAJE_SIN_JUGADORES = 'No hay suficientes jugadores para iniciar'
 
 export const NOMBRES_BOT = [
@@ -75,8 +53,4 @@ export const NOMBRES_BOT = [
   'Bruja Envidia',
   'Dragón Ancestral',
   'Santo Espada',
-  'Custodio del Alba',
-  'Sombra del Relicario',
-  'Hereje Dorado',
-  'Vigía de la Cripta',
 ]
