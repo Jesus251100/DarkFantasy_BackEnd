@@ -69,7 +69,7 @@ model Partida {
   usuario   Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 }
 
-/// Libro de compras, intercambios, recompensas y penalizaciones. El saldo vive en Progreso.
+/// Libro de compras, intercambios y recompensas. El saldo vive en Progreso.
 model HistorialTransaccion {
   id               String   @id @default(uuid())
   usuarioId        String

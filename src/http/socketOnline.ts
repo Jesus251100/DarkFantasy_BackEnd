@@ -10,15 +10,10 @@ import { otorgarLogro } from '../infrastructure/otorgarLogro'
 import { pagarDiamantesCaza, pagarExperienciaCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
 import { origenPermitido } from './seguridad'
-import { RECARGA_BOOSTER_MS, rechazoDeObjetivo } from '../domain/online/efectosBooster'
-import { CONFIG_ONLINE, mesaValida, type MesaElegida } from '../domain/online/ConfigOnline'
+import { RECARGA_BOOSTER_MS } from '../domain/online/efectosBooster'
+import { CONFIG_ONLINE } from '../domain/online/ConfigOnline'
 
-function leerMesa(payload: { modo?: unknown; cupo?: unknown } | undefined): MesaElegida | null {
-  if (!payload || (payload.modo === undefined && payload.cupo === undefined)) {
-    return { modo: 'mesa', cupo: 4 }
-  }
-  return mesaValida(payload.modo, payload.cupo)
-}
+const CUPO_SALA = 4
 const PUNTOS_POR_VICTORIA = 25
 
 function secreto(): string {
@@ -66,11 +61,6 @@ export function montarOnline(servidor: HttpServer): Server {
     },
     onCantar(sala, numero) {
       io.to(sala.id).emit('ball:called', { salaId: sala.id, numero })
-    },
-    onEstado(sala) {
-      for (const humano of sala.humanos()) {
-        if (humano.socketId && humano.conectado) emitirVista(humano.id, humano.socketId, sala, 'room:state')
-      }
     },
     onTerminar(sala, ganadorId) {
       const ganador = sala.jugadores.find((j) => j.id === ganadorId) ?? null
@@ -186,9 +176,6 @@ export function montarOnline(servidor: HttpServer): Server {
     anfitrionId: string
     miembros: MiembroCola[]
     completarConBots: boolean
-    modo: MesaElegida['modo']
-    cupo: MesaElegida['cupo']
-    apuesta: 0 | 20 | 100
   }
 
   const esperas = new Map<string, Espera>()
@@ -234,10 +221,6 @@ export function montarOnline(servidor: HttpServer): Server {
     codigo: espera.codigo,
     anfitrionId: espera.anfitrionId,
     completarConBots: espera.completarConBots,
-    modo: espera.modo,
-    cupo: espera.cupo,
-    permiteBots: espera.modo !== 'pvp',
-    apuesta: espera.apuesta,
     jugadores: espera.miembros.map((miembro) => ({
       id: miembro.usuarioId,
       nombre: miembro.nombre,
@@ -408,12 +391,7 @@ export function montarOnline(servidor: HttpServer): Server {
       io.to('lobby-online').emit('chat:message', mensaje)
     })
 
-    socket.on('room:create', (payload?: { modo?: unknown; cupo?: unknown }) => {
-      const mesa = leerMesa(payload)
-      if (!mesa) {
-        socket.emit('room:error', { mensaje: 'Esa mesa no existe. Elige 4, 6, 8, PvP o equipos.' })
-        return
-      }
+    socket.on('room:create', () => {
       gestion.salirCola(sesion.usuarioId)
       gestion.abandonar(sesion.usuarioId)
       caza.salir(sesion.usuarioId)
@@ -424,9 +402,6 @@ export function montarOnline(servidor: HttpServer): Server {
         anfitrionId: sesion.usuarioId,
         miembros: [miembroDe(socket.id, sesion)],
         completarConBots: false,
-        modo: mesa.modo,
-        cupo: mesa.cupo,
-        apuesta: 0,
       }
       esperas.set(espera.codigo, espera)
       esperaDe.set(sesion.usuarioId, espera.codigo)
@@ -453,7 +428,7 @@ export function montarOnline(servidor: HttpServer): Server {
         emitirEspera(espera)
         return
       }
-      if (espera.miembros.length >= espera.cupo) {
+      if (espera.miembros.length >= CUPO_SALA) {
         socket.emit('room:error', { mensaje: 'La sala ya está llena.' })
         return
       }
@@ -483,83 +458,27 @@ export function montarOnline(servidor: HttpServer): Server {
       emitirEspera(espera)
     })
 
-    socket.on('room:apuesta', (payload: { monto?: number }) => {
-      void (async () => {
-        const codigo = esperaDe.get(sesion.usuarioId)
-        const espera = codigo ? esperas.get(codigo) : undefined
-        if (!espera) return
-        const monto = Number(payload?.monto)
-        if (monto !== 20 && monto !== 100) {
-          socket.emit('room:error', { mensaje: 'La apuesta solo puede ser de 20 o 100 monedas.' })
-          return
-        }
-        if (monto < espera.apuesta) {
-          socket.emit('room:error', { mensaje: 'La apuesta solo puede subir.' })
-          return
-        }
-        if (monto === espera.apuesta) return
-        if (espera.apuesta === 0 && espera.anfitrionId !== sesion.usuarioId) {
-          socket.emit('room:error', { mensaje: 'Solo el anfitrión pone la apuesta inicial.' })
-          return
-        }
-        const falta = await repo.puedenPagar(espera.miembros.map((miembro) => miembro.usuarioId), monto)
-        if (falta) {
-          socket.emit('room:error', { mensaje: falta })
-          return
-        }
-        espera.apuesta = monto
-        emitirEspera(espera)
-      })()
-    })
-
-    socket.on('room:start', (payload?: { modo?: 'sala' | 'bots' }) => {
-      void (async () => {
+    socket.on('room:start', () => {
       const codigo = esperaDe.get(sesion.usuarioId)
       const espera = codigo ? esperas.get(codigo) : undefined
       if (!espera || espera.anfitrionId !== sesion.usuarioId) {
         socket.emit('room:error', { mensaje: 'Solo quien creó la sala puede empezarla.' })
         return
       }
-      const arranque = payload?.modo === 'bots' || payload?.modo === 'sala'
-        ? payload.modo
-        : (espera.completarConBots ? 'bots' : 'sala')
-      if (arranque === 'bots' && espera.modo === 'pvp') {
-        socket.emit('room:error', { mensaje: 'El duelo no admite rivales invocados.' })
+      if (espera.miembros.length < CUPO_SALA && !espera.completarConBots) {
+        socket.emit('room:error', { mensaje: 'Espera a que se llene la sala o activa el relleno con bots.' })
         return
       }
-      if (arranque === 'bots' && espera.miembros.length >= espera.cupo) {
-        socket.emit('room:error', { mensaje: 'La sala ya está llena. Empieza con los jugadores que están dentro.' })
-        return
-      }
-      if (arranque === 'sala' && espera.miembros.length < 2) {
-        socket.emit('room:error', { mensaje: 'Hace falta al menos otro jugador para empezar sin bots.' })
-        return
-      }
-      if (espera.apuesta > 0) {
-        const cobro = await repo.cobrarApuesta(
-          espera.miembros.map((miembro) => miembro.usuarioId),
-          espera.apuesta,
-          espera.codigo,
-        )
-        if (!cobro.ok) {
-          socket.emit('room:error', { mensaje: cobro.error })
-          return
-        }
-        for (const miembro of espera.miembros) refrescarPerfil(miembro.usuarioId)
-      }
-      const mesa = { modo: espera.modo, cupo: espera.cupo }
-      const apuesta = espera.apuesta
       const miembros = espera.miembros.map((miembro) => ({ ...miembro }))
       esperas.delete(espera.codigo)
       for (const miembro of miembros) {
         esperaDe.delete(miembro.usuarioId)
         cancelarTemporizadorSala(miembro.usuarioId)
       }
-      gestion.iniciarSala(miembros, arranque === 'bots', mesa, apuesta)
+      gestion.iniciarSala(miembros, espera.completarConBots)
       for (const miembro of miembros) {
         if (!io.sockets.sockets.has(miembro.socketId)) gestion.desconectar(miembro.usuarioId, miembro.socketId)
       }
-      })()
     })
 
     socket.on('game:leave', (ack?: () => void) => {
@@ -597,11 +516,6 @@ export function montarOnline(servidor: HttpServer): Server {
       const objetivo = sala.jugadores.some((jugador) => jugador.id === objetivoId)
       if (!recarga || !objetivo) {
         socket.emit('booster:rechazo', { mensaje: 'Booster u objetivo inválido.' })
-        return
-      }
-      const rechazo = rechazoDeObjetivo(boosterId, sesion.usuarioId, objetivoId)
-      if (rechazo) {
-        socket.emit('booster:rechazo', { mensaje: rechazo })
         return
       }
       const claveRecarga = `${sesion.usuarioId}:${boosterId}`
@@ -663,12 +577,7 @@ export function montarOnline(servidor: HttpServer): Server {
       })()
     })
 
-    socket.on('queue:join', (payload?: { modo?: unknown; cupo?: unknown }) => {
-      const mesa = leerMesa(payload)
-      if (!mesa) {
-        socket.emit('queue:warning', { mensaje: 'Esa mesa no existe. Elige 4, 6, 8, PvP o equipos.' })
-        return
-      }
+    socket.on('queue:join', () => {
       caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
       salirSalaCaza(sesion.usuarioId)
@@ -678,23 +587,13 @@ export function montarOnline(servidor: HttpServer): Server {
         avatarUrl: sesion.avatarUrl,
         socketId: socket.id,
       }
-      socket.emit('queue:joined', { usuarioId: sesion.usuarioId, modo: mesa.modo, cupo: mesa.cupo })
-      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId, miembro.avatarUrl, mesa)
+      socket.emit('queue:joined', { usuarioId: sesion.usuarioId })
+      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId, miembro.avatarUrl)
     })
 
     socket.on('queue:leave', () => {
       gestion.salirCola(sesion.usuarioId)
       socket.emit('queue:left', { usuarioId: sesion.usuarioId })
-    })
-
-    socket.on('pvp:marcar', (payload: { indice?: number; activa?: boolean }) => {
-      const sala = gestion.salaDe(sesion.usuarioId)
-      if (!sala) return
-      const indice = Number(payload?.indice)
-      if (!Number.isInteger(indice)) return
-      const marcas = sala.fijarMarca(sesion.usuarioId, indice, payload?.activa === true)
-      if (!marcas) return
-      io.to(sala.id).emit('pvp:marcas', { jugadorId: sesion.usuarioId, marcas })
     })
 
     socket.on('game:claim', () => {
@@ -712,9 +611,6 @@ export function montarOnline(servidor: HttpServer): Server {
         anfitrionId: sesion.usuarioId,
         miembros: [miembroDe(socket.id, sesion)],
         completarConBots: false,
-        modo: 'mesa',
-        cupo: 4,
-        apuesta: 0,
       }
       salasCaza.set(sala.codigo, sala)
       cazaDe.set(sesion.usuarioId, sala.codigo)

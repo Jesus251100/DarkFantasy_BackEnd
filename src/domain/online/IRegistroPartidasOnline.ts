@@ -15,7 +15,6 @@ export interface ResultadoOnline {
   ganadorId: string | null
   ganadorNombre: string | null
   duracionSeg: number
-  apuesta: number
   jugadores: JugadorResultadoOnline[]
 }
 
@@ -24,8 +23,4 @@ export interface IRegistroPartidasOnline {
   registrar(resultado: ResultadoOnline): Promise<{ recompensaMonedas: number }>
   penalizarAbandono(usuarioId: string, salaId: string): Promise<void>
   obtenerPuntosRanking(usuarioId: string): Promise<number>
-  /** Null si todos pueden pagar. Si no, el texto para mostrar en la sala. */
-  puedenPagar(usuarioIds: string[], monto: number): Promise<string | null>
-  /** Cobra a todos o a ninguno. */
-  cobrarApuesta(usuarioIds: string[], monto: number, codigo: string): Promise<{ ok: true } | { ok: false; error: string }>
 }

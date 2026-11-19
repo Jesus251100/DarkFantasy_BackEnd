@@ -4,11 +4,10 @@ import { shuffleInPlace } from '../bingo/geometria'
 import { patronesDesdeModos } from '../bingo/patrones/catalogoPatrones'
 import type { IPatronVictoria } from '../bingo/patrones/IPatronVictoria'
 import type { BingoCell, WinMode, WinResult } from '../bingo/tipos'
-import type { ConfigOnline, ModoMesa } from './ConfigOnline'
+import type { ConfigOnline } from './ConfigOnline'
 import {
   BOOSTERS_OFENSIVOS,
   EFECTOS_BOOSTER,
-  rechazoDeObjetivo,
   type TipoEfectoBooster,
 } from './efectosBooster'
 
@@ -54,7 +53,6 @@ export interface JugadorSala {
   conectado: boolean
   carton: Carton
   ganador: boolean
-  equipo?: 1 | 2
   efectos: Partial<Record<TipoEfectoBooster, EfectoActivo>>
 }
 
@@ -65,7 +63,6 @@ export interface JugadorVista {
   esBot: boolean
   conectado: boolean
   ganador: boolean
-  equipo?: 1 | 2
   efectos: EfectoBoosterVista[]
 }
 
@@ -79,22 +76,9 @@ export interface VistaSala {
   maxNumber: number
   calledList: number[]
   lastDrawn: number | null
-  modo: ModoMesa
-  cupo: number
   jugadores: JugadorVista[]
   tuCarton: BingoCell[]
-  /** En PvP, el cartón del otro humano, con las casillas que ya marcó. */
-  cartonRival: { id: string; nombre: string; celdas: BingoCell[] } | null
   ganador: string | null
-  apuesta: number
-  /** En equipos, el marcador de la serie al mejor de 3. En los demás modos es null. */
-  serie: {
-    ronda: number
-    equipo1: number
-    equipo2: number
-    aviso: string | null
-    equipoGanador: 1 | 2 | null
-  } | null
 }
 
 /** Una sala de bingo online: estado puro, sin socket ni temporizadores. */
@@ -106,18 +90,12 @@ export class SalaOnline {
   private oraculo: Oraculo
   private estado: EstadoSala = 'waiting'
   private ganadorId: string | null = null
-  private rondaActual = 1
-  private readonly puntosEquipo = { 1: 0, 2: 0 }
-  private avisoRonda: string | null = null
-  private equipoGanadorSerie: 1 | 2 | null = null
-  private apuestaMonto = 0
   private readonly creadaEn = Date.now()
   private iniciadaEn: number | null = null
 
   constructor(
     readonly id: string,
     readonly config: ConfigOnline,
-    readonly modo: ModoMesa = 'mesa',
   ) {
     this.metodoVictoria =
       config.winModes[Math.floor(Math.random() * config.winModes.length)] ?? 'row'
@@ -151,62 +129,6 @@ export class SalaOnline {
     return Math.round((Date.now() - this.iniciadaEn) / 1000)
   }
 
-  get apuesta(): number {
-    return this.apuestaMonto
-  }
-
-  fijarApuesta(monto: number): void {
-    this.apuestaMonto = monto > 0 ? monto : 0
-  }
-
-  get serie(): VistaSala['serie'] {
-    if (this.modo !== 'equipos') return null
-    return {
-      ronda: this.rondaActual,
-      equipo1: this.puntosEquipo[1],
-      equipo2: this.puntosEquipo[2],
-      aviso: this.avisoRonda,
-      equipoGanador: this.equipoGanadorSerie,
-    }
-  }
-
-  /**
-   * Anota el punto de la ronda que acaba de cerrarse. No reparte cartones.
-   * Devuelve true cuando la serie sigue y hay que abrir otra ronda.
-   */
-  anotarRonda(ganadorId: string | null): boolean {
-    if (this.modo !== 'equipos' || this.estado !== 'playing') return false
-    const ganador = ganadorId ? this.jugadores.find((jugador) => jugador.id === ganadorId) : undefined
-    const equipo = ganador?.equipo
-    if (equipo === 1 || equipo === 2) {
-      this.puntosEquipo[equipo] += 1
-      this.avisoRonda = `${ganador?.nombre ?? 'Un rival'} le dio la ronda ${this.rondaActual} al equipo ${equipo}`
-    } else {
-      this.avisoRonda = `La ronda ${this.rondaActual} quedó sin ganador`
-    }
-    const hayCampeon = this.puntosEquipo[1] >= 2 || this.puntosEquipo[2] >= 2
-    const serieCerrada = hayCampeon || this.rondaActual >= 3
-    if (!serieCerrada) return true
-    if (this.puntosEquipo[1] !== this.puntosEquipo[2]) {
-      this.equipoGanadorSerie = this.puntosEquipo[1] > this.puntosEquipo[2] ? 1 : 2
-    }
-    return false
-  }
-
-  /** Cartón nuevo y bolsa nueva. El marcador de la serie se conserva. */
-  abrirSiguienteRonda(): void {
-    if (this.modo !== 'equipos' || this.estado !== 'playing') return
-    this.rondaActual += 1
-    this.avisoRonda = null
-    this.ganadorId = null
-    this.oraculo = Oraculo.nuevo(this.config.maxNumber)
-    for (const jugador of this.jugadores) {
-      jugador.carton = Carton.aleatorio(this.config.size, this.config.maxNumber)
-      jugador.ganador = false
-      jugador.efectos = {}
-    }
-  }
-
   agregarJugador(id: string, nombre: string, esBot: boolean, socketId: string | null = null, avatarUrl: string | null = null): void {
     this.jugadores.push({
       id,
@@ -225,31 +147,6 @@ export class SalaOnline {
     this.oraculo = Oraculo.nuevo(this.config.maxNumber)
     this.estado = 'playing'
     this.iniciadaEn = Date.now()
-  }
-
-  /**
-   * En PvP guarda la marca visual del jugador. Solo se puede marcar un número ya cantado.
-   * Devuelve las casillas marcadas, o null si la jugada no vale.
-   */
-  fijarMarca(usuarioId: string, indice: number, activa: boolean): number[] | null {
-    if (this.modo !== 'pvp' || this.estado !== 'playing') return null
-    const jugador = this.jugadores.find((item) => item.id === usuarioId && !item.esBot)
-    const celda = jugador?.carton.celdaEn(indice)
-    if (!jugador || !celda || celda.libre) return null
-    if (celda.estaMarcada !== activa) {
-      const aceptada = jugador.carton.toggleCelda(indice, this.oraculo.conjunto)
-      if (!aceptada) return null
-    }
-    return jugador.carton.toSnapshot().flatMap((item, i) => (item.marked && !item.free ? [i] : []))
-  }
-
-  /** En equipos, la primera mitad de los asientos es el bando 1 y la otra el bando 2. */
-  sellarEquipos(): void {
-    if (this.modo !== 'equipos') return
-    const mitad = this.config.maxPlayers / 2
-    this.jugadores.forEach((jugador, indice) => {
-      jugador.equipo = indice < mitad ? 1 : 2
-    })
   }
 
   cantar(): number | null {
@@ -296,10 +193,6 @@ export class SalaOnline {
     const definicion = EFECTOS_BOOSTER[boosterId]
     if (!definicion) {
       return { ok: false, error: 'Booster desconocido.' }
-    }
-    const rechazo = rechazoDeObjetivo(boosterId, lanzador.id, objetivo.id)
-    if (rechazo) {
-      return { ok: false, error: rechazo }
     }
 
     const ahora = Date.now()
@@ -397,11 +290,6 @@ export class SalaOnline {
   finalizar(ganadorId: string | null): void {
     this.estado = 'finished'
     this.ganadorId = ganadorId
-    if (this.modo === 'equipos') {
-      const equipo = this.equipoGanadorSerie
-      for (const jugador of this.jugadores) jugador.ganador = equipo !== null && jugador.equipo === equipo
-      return
-    }
     for (const j of this.jugadores) j.ganador = j.id === ganadorId
   }
 
@@ -435,8 +323,6 @@ export class SalaOnline {
       maxNumber: this.config.maxNumber,
       calledList: [...this.oraculo.lista],
       lastDrawn: this.oraculo.ultimaBola,
-      modo: this.modo,
-      cupo: this.config.maxPlayers,
       jugadores: this.jugadores.map((j) => ({
         id: j.id,
         nombre: j.nombre,
@@ -444,22 +330,11 @@ export class SalaOnline {
         esBot: j.esBot,
         conectado: j.conectado,
         ganador: j.ganador,
-        ...(j.equipo ? { equipo: j.equipo } : {}),
         efectos: this.efectosDe(j, ahora),
       })),
       tuCarton: yo ? yo.carton.toSnapshot() : [],
-      cartonRival: this.cartonDelRival(usuarioId),
       ganador: this.ganadorId,
-      apuesta: this.apuestaMonto,
-      serie: this.serie,
     }
-  }
-
-  private cartonDelRival(usuarioId: string): VistaSala['cartonRival'] {
-    if (this.modo !== 'pvp') return null
-    const rival = this.jugadores.find((jugador) => jugador.id !== usuarioId && !jugador.esBot)
-    if (!rival) return null
-    return { id: rival.id, nombre: rival.nombre, celdas: rival.carton.toSnapshot() }
   }
 
   get contexto(): string {
