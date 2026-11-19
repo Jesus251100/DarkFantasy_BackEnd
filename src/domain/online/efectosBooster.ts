@@ -21,5 +21,19 @@ export const RECARGA_BOOSTER_MS: Record<number, number> = {
   4: 50_000,
 }
 
-/** Los boosters que el escudo puede bloquear. */
+/** Ataque: hielo y sabotaje. Solo pueden caer sobre otro jugador. */
 export const BOOSTERS_OFENSIVOS = new Set([1, 2])
+
+/** Defensa: suerte y escudo. Solo pueden cubrir a quien los lanza. */
+export const BOOSTERS_DEFENSIVOS = new Set([3, 4])
+
+/** Devuelve el motivo del rechazo, o null si ese jugador puede recibir el booster. */
+export function rechazoDeObjetivo(boosterId: number, lanzadorId: string, objetivoId: string): string | null {
+  if (BOOSTERS_OFENSIVOS.has(boosterId)) {
+    return objetivoId === lanzadorId ? 'Este ataque solo se lanza a los demás.' : null
+  }
+  if (BOOSTERS_DEFENSIVOS.has(boosterId)) {
+    return objetivoId === lanzadorId ? null : 'La defensa solo te cubre a ti.'
+  }
+  return 'Booster desconocido.'
+}

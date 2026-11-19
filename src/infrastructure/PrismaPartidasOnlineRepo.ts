@@ -121,7 +121,7 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
       for (const jugador of humanos) {
         await tx.progreso.upsert({ where: { usuarioId: jugador.id }, update: {}, create: { usuarioId: jugador.id } })
         await this.inicializarRanking(tx, jugador.id)
-        const gano = jugador.id === resultado.ganadorId
+        const gano = jugador.gano
         const monedasPremio = gano ? RECOMPENSA_VICTORIA_ONLINE : 0
         const xpPremio = XP_PARTICIPACION_ONLINE + (gano ? XP_VICTORIA_ONLINE - XP_PARTICIPACION_ONLINE : 0)
         const progreso = await tx.progreso.update({
@@ -156,8 +156,101 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
           if (victoriasOnline >= 5 && await otorgarLogro(tx, jugador.id, 'racha-online')) recompensaMonedas += 300
         }
       }
+      const apuesta = Math.max(0, Math.floor(resultado.apuesta))
+      const ganadores = humanos.filter((jugador) => jugador.gano)
+      if (apuesta > 0 && ganadores.length > 0) {
+        const bote = apuesta * humanos.length
+        const parte = Math.floor(bote / ganadores.length)
+        let sobra = bote - parte * ganadores.length
+        for (const ganador of ganadores) {
+          const premio = parte + (sobra > 0 ? 1 : 0)
+          if (sobra > 0) sobra -= 1
+          if (premio <= 0) continue
+          const progreso = await tx.progreso.update({
+            where: { usuarioId: ganador.id },
+            data: { coins: { increment: premio } },
+          })
+          await tx.historialTransaccion.create({
+            data: {
+              usuarioId: ganador.id,
+              tipo: 'recompensa',
+              deltaMonedas: premio,
+              deltaDiamantes: 0,
+              monedasDespues: progreso.coins,
+              diamantesDespues: progreso.diamonds,
+              detalle: `Apuesta ganada: +${premio} monedas`,
+            },
+          })
+        }
+      }
       return { recompensaMonedas }
     })
+  }
+
+  async puedenPagar(usuarioIds: string[], monto: number): Promise<string | null> {
+    if (monto <= 0) return null
+    const faltan = await this.quienesNoAlcanzan(usuarioIds, monto)
+    return faltan.length ? `No alcanza la apuesta de ${monto}. Le falta saldo a ${faltan.join(', ')}.` : null
+  }
+
+  async cobrarApuesta(
+    usuarioIds: string[],
+    monto: number,
+    codigo: string,
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (monto <= 0) return { ok: true }
+    try {
+      await this.db.$transaction(async (tx) => {
+        const faltan: string[] = []
+        const listos: Array<{ usuarioId: string; nombre: string }> = []
+        for (const usuarioId of [...new Set(usuarioIds)]) {
+          await tx.progreso.upsert({ where: { usuarioId }, update: {}, create: { usuarioId } })
+          await tx.$queryRaw`SELECT "usuarioId" FROM "Progreso" WHERE "usuarioId" = ${usuarioId} FOR UPDATE`
+          const fila = await tx.progreso.findUniqueOrThrow({ where: { usuarioId } })
+          const usuario = await tx.usuario.findUnique({ where: { id: usuarioId }, select: { nombre: true } })
+          const nombre = usuario?.nombre ?? 'Un jugador'
+          if (fila.coins < monto) faltan.push(nombre)
+          else listos.push({ usuarioId, nombre })
+        }
+        if (faltan.length) {
+          throw new ApuestaRechazada(`No alcanza la apuesta de ${monto}. Le falta saldo a ${faltan.join(', ')}.`)
+        }
+        for (const jugador of listos) {
+          const progreso = await tx.progreso.update({
+            where: { usuarioId: jugador.usuarioId },
+            data: { coins: { decrement: monto } },
+          })
+          await tx.historialTransaccion.create({
+            data: {
+              usuarioId: jugador.usuarioId,
+              tipo: 'compra',
+              deltaMonedas: -monto,
+              deltaDiamantes: 0,
+              monedasDespues: progreso.coins,
+              diamantesDespues: progreso.diamonds,
+              detalle: `Apuesta de la sala ${codigo}: -${monto} monedas`,
+            },
+          })
+        }
+      })
+      return { ok: true }
+    } catch (error) {
+      if (error instanceof ApuestaRechazada) return { ok: false, error: error.message }
+      const mensaje = error instanceof Error ? error.message : 'error desconocido'
+      console.error(`No se pudo cobrar la apuesta: ${mensaje}`)
+      return { ok: false, error: 'No se pudo cobrar la apuesta.' }
+    }
+  }
+
+  private async quienesNoAlcanzan(usuarioIds: string[], monto: number): Promise<string[]> {
+    const faltan: string[] = []
+    for (const usuarioId of [...new Set(usuarioIds)]) {
+      const fila = await this.db.progreso.findUnique({ where: { usuarioId }, select: { coins: true } })
+      if ((fila?.coins ?? 0) >= monto) continue
+      const usuario = await this.db.usuario.findUnique({ where: { id: usuarioId }, select: { nombre: true } })
+      faltan.push(usuario?.nombre ?? 'Un jugador')
+    }
+    return faltan
   }
 
   private async inicializarRanking(tx: Prisma.TransactionClient, usuarioId: string): Promise<void> {
@@ -170,6 +263,8 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
     })
   }
 }
+
+class ApuestaRechazada extends Error {}
 
 function esLlaveAjena(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003'
