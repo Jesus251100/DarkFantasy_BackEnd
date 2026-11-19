@@ -12,6 +12,7 @@ import type { JwtPayload } from './auth'
 import { origenPermitido } from './seguridad'
 import { RECARGA_BOOSTER_MS, rechazoDeObjetivo } from '../domain/online/efectosBooster'
 import { CONFIG_ONLINE, mesaValida, type MesaElegida } from '../domain/online/ConfigOnline'
+import { ESPERA_LOCALIZADOR, ID_LOCALIZADOR } from '../domain/online/RadarSala'
 
 function leerMesa(payload: { modo?: unknown; cupo?: unknown } | undefined): MesaElegida | null {
   if (!payload || (payload.modo === undefined && payload.cupo === undefined)) {
@@ -56,16 +57,29 @@ export function montarOnline(servidor: HttpServer): Server {
 
   const oyente: OyenteSalas = {
     onEmparejar(sala, humanos) {
-      for (const humano of humanos) {
-        const socket = io.sockets.sockets.get(humano.socketId)
-        if (!socket) continue
-        void socket.join(sala.id)
-        socket.emit('match:found', { salaId: sala.id })
-        emitirVista(humano.usuarioId, humano.socketId, sala, 'room:state')
-      }
+      void (async () => {
+        for (const humano of humanos) {
+          try {
+            sala.anotarEspera(humano.usuarioId, await bajarEsperaLocalizador(humano.usuarioId))
+          } catch (error) {
+            const mensaje = error instanceof Error ? error.message : 'error desconocido'
+            console.error(`No se pudo actualizar la espera del localizador: ${mensaje}`)
+          }
+        }
+        for (const humano of humanos) {
+          const socket = io.sockets.sockets.get(humano.socketId)
+          if (!socket) continue
+          void socket.join(sala.id)
+          socket.emit('match:found', { salaId: sala.id })
+          emitirVista(humano.usuarioId, humano.socketId, sala, 'room:state')
+        }
+      })()
     },
     onCantar(sala, numero) {
       io.to(sala.id).emit('ball:called', { salaId: sala.id, numero })
+    },
+    onRadar(sala, contacto) {
+      io.to(sala.id).emit('radar:evento', contacto)
     },
     onEstado(sala) {
       for (const humano of sala.humanos()) {
@@ -123,6 +137,54 @@ export function montarOnline(servidor: HttpServer): Server {
   }
 
   const gestion = new GestionSalas(oyente, repo)
+
+  const usarLocalizador = async (
+    socket: { emit: (evento: string, datos: unknown) => void; to: (salaId: string) => { emit: (evento: string, datos: unknown) => void } },
+    usuarioId: string,
+    sala: SalaOnline | null,
+  ) => {
+    if (!sala || sala.estadoActual !== 'playing') {
+      socket.emit('booster:rechazo', { mensaje: 'No estás en una partida.' })
+      return
+    }
+    if (sala.radarActivo) {
+      socket.emit('booster:rechazo', { mensaje: 'El escaneo de la sala está activo.' })
+      return
+    }
+    const espera = sala.esperaDe(usuarioId)
+    if (espera > 0) {
+      const palabra = espera === 1 ? 'partida' : 'partidas'
+      socket.emit('booster:rechazo', { mensaje: `Te faltan ${espera} ${palabra} para usar el localizador.` })
+      return
+    }
+    const stockRestante = await cambiarStockBooster(usuarioId, ID_LOCALIZADOR, -1)
+    if (stockRestante === null) {
+      socket.emit('booster:rechazo', { mensaje: 'No tienes unidades de este booster en el inventario.' })
+      return
+    }
+    try {
+      await fijarEsperaLocalizador(usuarioId, ESPERA_LOCALIZADOR)
+    } catch (error) {
+      await cambiarStockBooster(usuarioId, ID_LOCALIZADOR, 1)
+      const mensaje = error instanceof Error ? error.message : 'error desconocido'
+      console.error(`No se pudo guardar la espera del localizador: ${mensaje}`)
+      socket.emit('booster:rechazo', { mensaje: 'No se pudo usar el localizador.' })
+      return
+    }
+    sala.anotarEspera(usuarioId, ESPERA_LOCALIZADOR)
+    const contacto = sala.liderRadar()
+    socket.emit('radar:resultado', {
+      nombre: contacto?.nombre ?? 'Nadie',
+      hechas: contacto?.hechas ?? 0,
+      total: contacto?.total ?? 0,
+      stockRestante,
+      espera: ESPERA_LOCALIZADOR,
+    })
+    socket.to(sala.id).emit('radar:aviso', { mensaje: 'Alguien acaba de escanear.' })
+    for (const humano of sala.humanos()) {
+      if (humano.socketId && humano.conectado) emitirVista(humano.id, humano.socketId, sala, 'room:state')
+    }
+  }
 
   const avisarRuleta = async (cazadores: Cazador[], diamantes: number) => {
     const pagado = await pagarDiamantesCaza(
@@ -189,6 +251,7 @@ export function montarOnline(servidor: HttpServer): Server {
     modo: MesaElegida['modo']
     cupo: MesaElegida['cupo']
     apuesta: 0 | 20 | 100
+    radar: boolean
   }
 
   const esperas = new Map<string, Espera>()
@@ -238,6 +301,7 @@ export function montarOnline(servidor: HttpServer): Server {
     cupo: espera.cupo,
     permiteBots: espera.modo !== 'pvp',
     apuesta: espera.apuesta,
+    escaneo: espera.radar,
     jugadores: espera.miembros.map((miembro) => ({
       id: miembro.usuarioId,
       nombre: miembro.nombre,
@@ -408,7 +472,7 @@ export function montarOnline(servidor: HttpServer): Server {
       io.to('lobby-online').emit('chat:message', mensaje)
     })
 
-    socket.on('room:create', (payload?: { modo?: unknown; cupo?: unknown }) => {
+    socket.on('room:create', (payload?: { modo?: unknown; cupo?: unknown; radar?: unknown }) => {
       const mesa = leerMesa(payload)
       if (!mesa) {
         socket.emit('room:error', { mensaje: 'Esa mesa no existe. Elige 4, 6, 8, PvP o equipos.' })
@@ -427,6 +491,7 @@ export function montarOnline(servidor: HttpServer): Server {
         modo: mesa.modo,
         cupo: mesa.cupo,
         apuesta: 0,
+        radar: payload?.radar === true,
       }
       esperas.set(espera.codigo, espera)
       esperaDe.set(sesion.usuarioId, espera.codigo)
@@ -555,7 +620,7 @@ export function montarOnline(servidor: HttpServer): Server {
         esperaDe.delete(miembro.usuarioId)
         cancelarTemporizadorSala(miembro.usuarioId)
       }
-      gestion.iniciarSala(miembros, arranque === 'bots', mesa, apuesta)
+      gestion.iniciarSala(miembros, arranque === 'bots', mesa, apuesta, espera.radar)
       for (const miembro of miembros) {
         if (!io.sockets.sockets.has(miembro.socketId)) gestion.desconectar(miembro.usuarioId, miembro.socketId)
       }
@@ -593,6 +658,10 @@ export function montarOnline(servidor: HttpServer): Server {
       }
       const boosterId = Number(payload?.boosterId)
       const objetivoId = String(payload?.objetivoId ?? '')
+      if (boosterId === ID_LOCALIZADOR) {
+        await usarLocalizador(socket, sesion.usuarioId, sala)
+        return
+      }
       const recarga = RECARGA_BOOSTER_MS[boosterId]
       const objetivo = sala.jugadores.some((jugador) => jugador.id === objetivoId)
       if (!recarga || !objetivo) {
@@ -715,6 +784,7 @@ export function montarOnline(servidor: HttpServer): Server {
         modo: 'mesa',
         cupo: 4,
         apuesta: 0,
+        radar: false,
       }
       salasCaza.set(sala.codigo, sala)
       cazaDe.set(sesion.usuarioId, sala.codigo)
@@ -813,6 +883,27 @@ export function montarOnline(servidor: HttpServer): Server {
   return io
 }
 
+async function bajarEsperaLocalizador(usuarioId: string): Promise<number> {
+  return prisma.$transaction(async (tx) => {
+    await tx.progreso.upsert({ where: { usuarioId }, update: {}, create: { usuarioId } })
+    await tx.$queryRaw`SELECT "usuarioId" FROM "Progreso" WHERE "usuarioId" = ${usuarioId} FOR UPDATE`
+    const fila = await tx.progreso.findUnique({ where: { usuarioId }, select: { localizadorEspera: true } })
+    const actual = Math.max(0, fila?.localizadorEspera ?? 0)
+    const siguiente = actual > 0 ? actual - 1 : 0
+    if (siguiente !== actual) {
+      await tx.progreso.update({ where: { usuarioId }, data: { localizadorEspera: siguiente } })
+    }
+    return siguiente
+  })
+}
+
+async function fijarEsperaLocalizador(usuarioId: string, espera: number): Promise<void> {
+  await prisma.progreso.update({
+    where: { usuarioId },
+    data: { localizadorEspera: Math.max(0, espera) },
+  })
+}
+
 async function cambiarStockBooster(usuarioId: string, boosterId: number, delta: -1 | 1): Promise<number | null> {
   return prisma.$transaction(async (tx) => {
     await tx.progreso.upsert({ where: { usuarioId }, update: {}, create: { usuarioId } })
@@ -824,7 +915,7 @@ async function cambiarStockBooster(usuarioId: string, boosterId: number, delta: 
       ? bruto as Record<string, unknown>
       : {}
     const stock: Record<string, number> = {}
-    for (const id of [1, 2, 3, 4]) {
+    for (const id of [1, 2, 3, 4, ID_LOCALIZADOR]) {
       const cantidad = Number(original[String(id)] ?? 0)
       stock[String(id)] = Number.isFinite(cantidad) ? Math.max(0, Math.floor(cantidad)) : 0
     }

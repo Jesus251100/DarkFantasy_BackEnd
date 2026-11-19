@@ -2,6 +2,7 @@ import type { Booster } from './Booster'
 import { BoosterFreeze } from './BoosterFreeze'
 import { BoosterGoodLuck } from './BoosterGoodLuck'
 import { BoosterSabotage } from './BoosterSabotage'
+import { BoosterLocalizador } from './BoosterLocalizador'
 import { BoosterShield } from './BoosterShield'
 
 /** Lista los boosters. Un ítem nuevo = clase nueva + una línea aquí (O). */
@@ -11,6 +12,7 @@ export class CatalogoBoosters {
     new BoosterSabotage(),
     new BoosterGoodLuck(),
     new BoosterShield(),
+    new BoosterLocalizador(),
   ]
 
   static listar(): Booster[] {

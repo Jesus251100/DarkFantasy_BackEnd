@@ -30,6 +30,6 @@ export function campaniaVacia(): DatosCampania {
     xp: 0,
     wins: 0,
     displayName: 'Jugador',
-    boosters: { '1': 0, '2': 0, '3': 0, '4': 0 },
+    boosters: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 },
   }
 }

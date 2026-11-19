@@ -11,6 +11,7 @@ import {
 } from '../domain/online/ConfigOnline'
 import { shuffleInPlace } from '../domain/bingo/geometria'
 import { SalaOnline, type VistaSala } from '../domain/online/SalaOnline'
+import type { ContactoRadar } from '../domain/online/RadarSala'
 import type { IRegistroPartidasOnline, ResultadoOnline } from '../domain/online/IRegistroPartidasOnline'
 
 export interface MiembroCola {
@@ -29,6 +30,8 @@ export interface OyenteSalas {
   /** Se encontró partida: los humanos deben recibir su vista y unirse a la sala. */
   onEmparejar(sala: SalaOnline, humanos: MiembroCola[]): void
   onCantar(sala: SalaOnline, numero: number): void
+  /** El radar de la sala se muestra una vez. Lo ven todos. */
+  onRadar(sala: SalaOnline, contacto: ContactoRadar): void
   onTerminar(sala: SalaOnline, ganadorId: string | null): void
   /** La sala sigue en juego: marcador de ronda o cartones nuevos. */
   onEstado(sala: SalaOnline): void
@@ -180,11 +183,17 @@ export class GestionSalas {
   }
 
   /** Abre una sala con estos jugadores. El cupo y el modo vienen de la mesa elegida. */
-  iniciarSala(miembros: MiembroCola[], rellenarConBots: boolean, mesa: MesaElegida, apuesta = 0): void {
+  iniciarSala(
+    miembros: MiembroCola[],
+    rellenarConBots: boolean,
+    mesa: MesaElegida,
+    apuesta = 0,
+    radarPermitido = false,
+  ): void {
     const vivos = miembros.filter((m) => m.usuarioId && m.socketId)
     if (vivos.length === 0) return
     for (const miembro of vivos) this.abandonar(miembro.usuarioId)
-    this.crearSala(vivos, rellenarConBots, mesa, apuesta)
+    this.crearSala(vivos, rellenarConBots, mesa, apuesta, radarPermitido)
   }
 
   vistaDe(usuarioId: string): VistaSala | null {
@@ -257,10 +266,17 @@ export class GestionSalas {
     this.crearSala(this.tomarGrupo(mesa, 1), true, mesa)
   }
 
-  private crearSala(humanos: MiembroCola[], conBots: boolean, mesa: MesaElegida, apuesta = 0): void {
+  private crearSala(
+    humanos: MiembroCola[],
+    conBots: boolean,
+    mesa: MesaElegida,
+    apuesta = 0,
+    radarPermitido = true,
+  ): void {
     if (humanos.length === 0) return
     const sala = new SalaOnline(randomUUID(), configPara(mesa, this.config), mesa.modo)
     sala.fijarApuesta(apuesta)
+    sala.programarRadar(radarPermitido)
     for (const h of humanos) {
       sala.agregarJugador(h.usuarioId, h.nombre, false, h.socketId, h.avatarUrl)
       this.salaDeUsuario.set(h.usuarioId, sala.id)
@@ -298,6 +314,8 @@ export class GestionSalas {
       this.resolverRonda(sala, null)
       return
     }
+    const contacto = sala.tomarRadar()
+    if (contacto) this.oyente.onRadar(sala, contacto)
     this.oyente.onCantar(sala, numero)
     this.reaccionBots(sala)
     this.programarCanto(sala, sala.config.drawIntervalMs)

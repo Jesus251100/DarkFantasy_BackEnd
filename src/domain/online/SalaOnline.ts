@@ -11,6 +11,14 @@ import {
   rechazoDeObjetivo,
   type TipoEfectoBooster,
 } from './efectosBooster'
+import {
+  BOLA_DEL_RADAR,
+  elegirLider,
+  medirAvance,
+  sortearRadar,
+  type ContactoRadar,
+  type MedidaAvance,
+} from './RadarSala'
 
 export type EstadoSala = 'waiting' | 'playing' | 'finished'
 
@@ -95,6 +103,10 @@ export interface VistaSala {
     aviso: string | null
     equipoGanador: 1 | 2 | null
   } | null
+  /** El sorteo del radar dio que sí. El localizador no se puede usar en esta partida. */
+  radarProgramado: boolean
+  /** Partidas que le faltan a quien mira para volver a usar el localizador. */
+  localizadorEspera: number
 }
 
 /** Una sala de bingo online: estado puro, sin socket ni temporizadores. */
@@ -111,6 +123,11 @@ export class SalaOnline {
   private avisoRonda: string | null = null
   private equipoGanadorSerie: 1 | 2 | null = null
   private apuestaMonto = 0
+  private radarProgramado = false
+  private radarMostrado = false
+  private readonly avanceRatio = new Map<string, number>()
+  private readonly avanceBola = new Map<string, number>()
+  private readonly esperaLocalizador = new Map<string, number>()
   private readonly creadaEn = Date.now()
   private iniciadaEn: number | null = null
 
@@ -159,6 +176,50 @@ export class SalaOnline {
     this.apuestaMonto = monto > 0 ? monto : 0
   }
 
+  /** La cola pública siempre lo permite. Una sala privada solo si el anfitrión lo dejó encendido. */
+  programarRadar(permitido: boolean, azar = Math.random()): void {
+    this.radarProgramado = sortearRadar(permitido, azar)
+  }
+
+  get radarActivo(): boolean {
+    return this.radarProgramado
+  }
+
+  anotarEspera(usuarioId: string, partidas: number): void {
+    this.esperaLocalizador.set(usuarioId, Math.max(0, partidas))
+  }
+
+  esperaDe(usuarioId: string): number {
+    return this.esperaLocalizador.get(usuarioId) ?? 0
+  }
+
+  /**
+   * Si el radar estaba pendiente y ya va la bola del escaneo, lo entrega una sola vez.
+   * Devuelve null cuando todavía no toca, o cuando esta partida no lo tiene.
+   */
+  tomarRadar(): ContactoRadar | null {
+    if (!this.radarProgramado || this.radarMostrado || this.estado !== 'playing') return null
+    if (this.oraculo.lista.length < BOLA_DEL_RADAR) return null
+    this.radarMostrado = true
+    return this.liderRadar()
+  }
+
+  liderRadar(): ContactoRadar | null {
+    const bolaActual = this.oraculo.lista.length
+    const candidatos = this.jugadores.map((jugador, asiento) => {
+      const medida = this.medir(jugador)
+      return {
+        nombre: jugador.nombre,
+        asiento,
+        hechas: medida.hechas,
+        total: medida.total,
+        ratio: medida.ratio,
+        bola: this.avanceBola.get(jugador.id) ?? bolaActual,
+      }
+    })
+    return elegirLider(candidatos)
+  }
+
   get serie(): VistaSala['serie'] {
     if (this.modo !== 'equipos') return null
     return {
@@ -205,6 +266,9 @@ export class SalaOnline {
       jugador.ganador = false
       jugador.efectos = {}
     }
+    this.avanceRatio.clear()
+    this.avanceBola.clear()
+    this.anotarAvance()
   }
 
   agregarJugador(id: string, nombre: string, esBot: boolean, socketId: string | null = null, avatarUrl: string | null = null): void {
@@ -225,6 +289,9 @@ export class SalaOnline {
     this.oraculo = Oraculo.nuevo(this.config.maxNumber)
     this.estado = 'playing'
     this.iniciadaEn = Date.now()
+    this.avanceRatio.clear()
+    this.avanceBola.clear()
+    this.anotarAvance()
   }
 
   /**
@@ -258,10 +325,11 @@ export class SalaOnline {
     this.limpiarEfectos(Date.now())
     const preferidos = this.numerosEnCartonesConEfecto('luck')
     const evitados = this.numerosEnCartonesConEfecto('sabotage')
-    if (preferidos.length || evitados.length) {
-      return this.oraculo.cantarConPreferencias(preferidos, evitados, 0.7)
-    }
-    return this.oraculo.cantar()
+    const numero = preferidos.length || evitados.length
+      ? this.oraculo.cantarConPreferencias(preferidos, evitados, 0.7)
+      : this.oraculo.cantar()
+    this.anotarAvance()
+    return numero
   }
 
   /** Validación autoritativa: ¿completó algún patrón con las bolas cantadas? */
@@ -452,6 +520,31 @@ export class SalaOnline {
       ganador: this.ganadorId,
       apuesta: this.apuestaMonto,
       serie: this.serie,
+      radarProgramado: this.radarProgramado,
+      localizadorEspera: this.esperaLocalizador.get(usuarioId) ?? 0,
+    }
+  }
+
+  private medir(jugador: JugadorSala): MedidaAvance {
+    const bloqueadas = new Set(jugador.efectos.sabotage?.casillasBloqueadas ?? [])
+    const figuras = this.patrones.flatMap((patron) => patron.indices(jugador.carton.tamano))
+    const celdas = jugador.carton.toSnapshot().map((celda) => ({
+      numero: celda.number,
+      libre: celda.free,
+    }))
+    return medirAvance(celdas, figuras, this.oraculo.conjunto, bloqueadas)
+  }
+
+  /** Guarda en qué bola cada jugador alcanzó su avance actual. */
+  private anotarAvance(): void {
+    const bola = this.oraculo.lista.length
+    for (const jugador of this.jugadores) {
+      const medida = this.medir(jugador)
+      const previo = this.avanceRatio.get(jugador.id) ?? -1
+      if (medida.ratio > previo) {
+        this.avanceRatio.set(jugador.id, medida.ratio)
+        this.avanceBola.set(jugador.id, bola)
+      }
     }
   }
 

@@ -53,7 +53,8 @@ model Progreso {
   rankingInitialized Boolean @default(false)
   progressionInitialized Boolean @default(false)
   wins            Int      @default(0)
-  boosters        Json     @default("{\"1\": 0, \"2\": 0, \"3\": 0, \"4\": 0}")
+  boosters        Json     @default("{\"1\": 0, \"2\": 0, \"3\": 0, \"4\": 0, \"5\": 0}")
+  localizadorEspera Int    @default(0)
   actualizadoEn   DateTime @updatedAt
   usuario         Usuario  @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
 }

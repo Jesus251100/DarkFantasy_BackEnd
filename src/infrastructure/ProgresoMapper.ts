@@ -16,7 +16,7 @@ export function progresoADatos(row: Progreso, nombre: string): DatosCampania {
     xp: row.xp,
     wins: row.wins,
     displayName: nombre,
-    boosters: { '1': 0, '2': 0, '3': 0, '4': 0, ...boosters },
+    boosters: { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0, ...boosters },
   }
 }
 

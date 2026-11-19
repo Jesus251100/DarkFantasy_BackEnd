@@ -12,7 +12,7 @@ export class Jugador {
   ) {}
 
   static inicial(): Jugador {
-    return new Jugador('Jugador', 0, 0, { '1': 0, '2': 0, '3': 0, '4': 0 })
+    return new Jugador('Jugador', 0, 0, { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 })
   }
 
   gastarMonedas(amount: number): boolean {
