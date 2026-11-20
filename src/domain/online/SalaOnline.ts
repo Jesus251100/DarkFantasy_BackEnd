@@ -465,7 +465,6 @@ export class SalaOnline {
 
   cantar(): number | null {
     if (this.estado !== 'playing' || this.faseSerie === 'intermedio') return null
-    if (!this.oraculo.quedanBolas()) return null
     if (this.eventoHasta !== null && this.eventoHasta <= Date.now()) {
       this.eventoActual = null
       this.eventoHasta = null

@@ -5,26 +5,33 @@ export class Oraculo {
   private cantadas: number[] = []
   private ultima: number | null = null
 
-  constructor(private bolsa: Bolsa) {}
+  constructor(private bolsa: Bolsa, private readonly maxNumber: number) {}
 
   static nuevo(maxNumber: number, pool?: number[]): Oraculo {
     const bolsa = pool && pool.length > 0 ? Bolsa.dePool(pool) : Bolsa.deRango(maxNumber)
-    return new Oraculo(bolsa)
+    return new Oraculo(bolsa, maxNumber)
   }
 
   static restaurar(cantadas: number[], restantes: number[], ultima: number | null): Oraculo {
-    const o = new Oraculo(Bolsa.desdeRestantes(restantes))
+    const maxNumber = Math.max(1, ...cantadas, ...restantes)
+    const o = new Oraculo(Bolsa.desdeRestantes(restantes), maxNumber)
     o.cantadas = [...cantadas]
     o.ultima = ultima
     return o
   }
 
   cantar(): number | null {
+    this.renovarBolsaSiHaceFalta()
     return this.registrar(this.bolsa.sacar())
   }
 
   cantarConPreferencias(preferidos: readonly number[], evitados: readonly number[], probabilidad: number): number | null {
+    this.renovarBolsaSiHaceFalta()
     return this.registrar(this.bolsa.sacarConPreferencias(preferidos, evitados, probabilidad))
+  }
+
+  private renovarBolsaSiHaceFalta(): void {
+    if (!this.bolsa.quedan()) this.bolsa = Bolsa.deRango(this.maxNumber)
   }
 
   private registrar(n: number | null): number | null {

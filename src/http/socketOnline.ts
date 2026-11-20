@@ -307,7 +307,7 @@ export function montarOnline(servidor: HttpServer): Server {
     completarConBots: espera.completarConBots,
     modo: espera.modo,
     cupo: espera.cupo,
-    permiteBots: false,
+    permiteBots: true,
     apuesta: espera.apuesta,
     escaneo: espera.radar,
     jugadores: espera.miembros.map((miembro) => ({
@@ -547,11 +547,7 @@ export function montarOnline(servidor: HttpServer): Server {
         socket.emit('room:error', { mensaje: 'No puedes cambiar esta sala.' })
         return
       }
-      if (payload?.habilitado === true) {
-        socket.emit('room:error', { mensaje: 'Las salas privadas solo admiten jugadores reales.' })
-        return
-      }
-      espera.completarConBots = false
+      espera.completarConBots = payload?.habilitado === true
       emitirEspera(espera)
     })
 
@@ -585,16 +581,17 @@ export function montarOnline(servidor: HttpServer): Server {
         socket.emit('room:error', { mensaje: 'Solo quien creó la sala puede empezarla.' })
         return
       }
-      if (payload?.modo === 'bots' || espera.completarConBots) {
-        socket.emit('room:error', { mensaje: 'Las salas privadas solo admiten jugadores reales.' })
+      const conBots = espera.completarConBots
+      if (payload?.modo === 'bots' && !conBots) {
+        socket.emit('room:error', { mensaje: 'Activa el relleno con bots antes de iniciar.' })
         return
       }
       const arranque = 'sala' as const
-      if (espera.modo === 'pvp' && (espera.miembros.length !== 2 || espera.miembros.some((miembro) => !miembro.usuarioId || miembro.usuarioId.startsWith('bot:')))) {
-        socket.emit('room:error', { mensaje: 'El duelo requiere dos jugadores reales.' })
+      if (espera.modo === 'pvp' && (!conBots && espera.miembros.length !== 2 || conBots && espera.miembros.length < 1)) {
+        socket.emit('room:error', { mensaje: conBots ? 'Se necesita al menos un jugador para iniciar el duelo.' : 'El duelo requiere dos jugadores reales.' })
         return
       }
-      const minimoSala = espera.modo === 'pvp' || espera.modo === 'equipos' ? 2 : Math.ceil(espera.cupo / 2)
+      const minimoSala = espera.modo === 'pvp' && conBots ? 1 : espera.modo === 'pvp' || espera.modo === 'equipos' ? 2 : Math.ceil(espera.cupo / 2)
       if (arranque === 'sala' && espera.miembros.length < minimoSala) {
         socket.emit('room:error', { mensaje: `Se necesitan al menos ${minimoSala} jugadores para iniciar esta sala.` })
         return
@@ -618,7 +615,7 @@ export function montarOnline(servidor: HttpServer): Server {
         esperaDe.delete(miembro.usuarioId)
         cancelarTemporizadorSala(miembro.usuarioId)
       }
-      gestion.iniciarSala(miembros, false, mesa, apuesta, espera.radar, `sala:${espera.codigo}`, espera.anfitrionId)
+      gestion.iniciarSala(miembros, conBots, mesa, apuesta, espera.radar, `sala:${espera.codigo}`, espera.anfitrionId)
       for (const miembro of miembros) {
         if (!io.sockets.sockets.has(miembro.socketId)) gestion.desconectar(miembro.usuarioId, miembro.socketId)
       }

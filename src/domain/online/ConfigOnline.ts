@@ -39,7 +39,7 @@ export interface ConfigOnline {
 
 export const CONFIG_ONLINE: ConfigOnline = {
   size: 5,
-  maxNumber: 75,
+  maxNumber: 90,
   winModes: [
     'row',
     'column',

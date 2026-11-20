@@ -386,7 +386,7 @@ export class GestionSalas {
       sala.agregarJugador(h.usuarioId, h.nombre, false, h.socketId, h.avatarUrl)
       this.salaDeUsuario.set(h.usuarioId, sala.id)
     }
-    if (conBots && mesa.modo !== 'pvp') {
+    if (conBots) {
       const perfiles = shuffleInPlace([...NOMBRES_BOT])
       let siguientePerfil = 0
       while (!sala.llena) {
