@@ -21,6 +21,7 @@
     "express": "^5.1.0",
     "google-auth-library": "^11.3.3",
     "jsonwebtoken": "^9.0.2",
+    "livekit-server-sdk": "^2.20.1",
     "nodemailer": "^10.2.1",
     "resend": "^6.38.1",
     "socket.io": "^4.8.4",

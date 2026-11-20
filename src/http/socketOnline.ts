@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from 'node:http'
 import jwt from 'jsonwebtoken'
 import { Server } from 'socket.io'
+import { AccessToken, TrackSource } from 'livekit-server-sdk'
 import { GestionSalas, type MiembroCola, type OyenteSalas } from '../application/GestionSalas'
 import type { SalaOnline } from '../domain/online/SalaOnline'
 import { prisma } from '../infrastructure/prisma'
@@ -849,6 +850,60 @@ export function montarOnline(servidor: HttpServer): Server {
       if (!permitirAccion(socket.id, 'game:claim', 800)) return
       gestion.registrarActividad(sesion.usuarioId)
       gestion.reclamarBingo(sesion.usuarioId)
+    })
+
+    socket.on('voice:token', (payload: { salaId?: string }, responder?: (respuesta: { ok: boolean; url?: string; token?: string; error?: string }) => void) => {
+      if (!permitirAccion(socket.id, 'voice:token', 1500)) {
+        responder?.({ ok: false, error: 'Espera un momento antes de volver a conectar la voz.' })
+        return
+      }
+      const salaId = String(payload?.salaId ?? '')
+      const sala = gestion.salaDe(sesion.usuarioId)
+      const jugador = sala?.jugadores.find((item) => item.id === sesion.usuarioId && !item.esBot)
+      if (!sala || sala.id !== salaId || sala.estadoActual !== 'playing' || !jugador) {
+        responder?.({ ok: false, error: 'Solo puedes conectar la voz desde una partida activa.' })
+        return
+      }
+
+      let canalVoz = `darkfantasy-${sala.id}-todos`
+      if (sala.modo === 'equipos') {
+        if (!jugador.equipo) {
+          responder?.({ ok: false, error: 'No se pudo verificar tu equipo para habilitar la voz.' })
+          return
+        }
+        // Cada equipo recibe un nombre de sala independiente: un token nunca da
+        // acceso al canal de voz del equipo contrario.
+        canalVoz = `darkfantasy-${sala.id}-equipo-${jugador.equipo}`
+      }
+
+      const url = process.env.LIVEKIT_URL?.trim()
+      const apiKey = process.env.LIVEKIT_API_KEY?.trim()
+      const apiSecret = process.env.LIVEKIT_API_SECRET?.trim()
+      if (!url || !apiKey || !apiSecret) {
+        responder?.({ ok: false, error: 'El servicio de voz todavía no está configurado.' })
+        return
+      }
+
+      void (async () => {
+        try {
+          const access = new AccessToken(apiKey, apiSecret, {
+            identity: sesion.usuarioId,
+            name: sesion.nombre,
+            ttl: '10m',
+          })
+          access.addGrant({
+            roomJoin: true,
+            room: canalVoz,
+            canPublishSources: [TrackSource.MICROPHONE],
+            canSubscribe: true,
+            canPublishData: false,
+          })
+          responder?.({ ok: true, url, token: await access.toJwt() })
+        } catch (error) {
+          console.error('No se pudo generar el acceso de voz:', error)
+          responder?.({ ok: false, error: 'No se pudo iniciar la conexión de voz.' })
+        }
+      })()
     })
 
     socket.on('disconnect', () => {
