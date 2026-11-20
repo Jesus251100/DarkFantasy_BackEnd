@@ -426,12 +426,6 @@ export function montarOnline(servidor: HttpServer): Server {
       if (!permitirAccion(socket.id, 'chat:send', 800)) return
       const texto = String(payload?.texto ?? '').trim().slice(0, 80)
       if (!texto) return
-      const mensaje = {
-        id: `${Date.now()}-${socket.id}`,
-        nombre: sesion.nombre,
-        texto,
-        creadoEn: new Date().toISOString(),
-      }
       const codigo = esperaDe.get(sesion.usuarioId)
       const espera = codigo ? esperas.get(codigo) : undefined
       const sala = gestion.salaDe(sesion.usuarioId)
@@ -440,9 +434,9 @@ export function montarOnline(servidor: HttpServer): Server {
         try {
           const guardado = await prisma.chatOnlineMensaje.create({
             data: { canal: contexto, usuarioId: sesion.usuarioId, nombre: sesion.nombre, texto },
-            select: { id: true, nombre: true, texto: true, creadoEn: true },
+            select: { id: true, usuarioId: true, nombre: true, texto: true, creadoEn: true },
           })
-          const persistido = { ...guardado, creadoEn: guardado.creadoEn.toISOString() }
+          const persistido = { ...guardado, avatarUrl: sesion.avatarUrl, creadoEn: guardado.creadoEn.toISOString() }
           if (espera) for (const miembro of espera.miembros) io.to(miembro.socketId).emit('chat:message', persistido)
           else if (sala) io.to(sala.id).emit('chat:message', persistido)
           else io.to('lobby-online').emit('chat:message', persistido)
@@ -450,6 +444,27 @@ export function montarOnline(servidor: HttpServer): Server {
           socket.emit('chat:error', { mensaje: 'No se pudo guardar el mensaje.' })
         }
       })()
+    })
+
+    socket.on('chat:typing', (payload: { escribiendo?: boolean }) => {
+      const codigo = esperaDe.get(sesion.usuarioId)
+      const espera = codigo ? esperas.get(codigo) : undefined
+      const sala = gestion.salaDe(sesion.usuarioId)
+      const estado = {
+        usuarioId: sesion.usuarioId,
+        nombre: sesion.nombre,
+        avatarUrl: sesion.avatarUrl,
+        escribiendo: payload?.escribiendo === true,
+      }
+      if (espera) {
+        for (const miembro of espera.miembros) {
+          if (miembro.usuarioId !== sesion.usuarioId) io.to(miembro.socketId).emit('chat:typing', estado)
+        }
+      } else if (sala) {
+        io.to(sala.id).except(socket.id).emit('chat:typing', estado)
+      } else {
+        io.to('lobby-online').except(socket.id).emit('chat:typing', estado)
+      }
     })
 
     socket.on('chat:history', (payload: { contexto?: string }) => {
@@ -466,11 +481,16 @@ export function montarOnline(servidor: HttpServer): Server {
       const canal = sala && solicitado === `partida:${sala.id}` ? sala.chatCanal : solicitado
       void prisma.chatOnlineMensaje.findMany({
         where: { canal }, orderBy: { creadoEn: 'desc' }, take: 100,
-        select: { id: true, nombre: true, texto: true, creadoEn: true },
-      }).then((mensajes) => socket.emit('chat:history', {
-        contexto: solicitado,
-        mensajes: mensajes.reverse().map((mensaje) => ({ ...mensaje, creadoEn: mensaje.creadoEn.toISOString() })),
-      })).catch(() => socket.emit('chat:error', { mensaje: 'No se pudo cargar el historial del chat.' }))
+        select: { id: true, usuarioId: true, nombre: true, texto: true, creadoEn: true },
+      }).then(async (mensajes) => {
+        const ids = [...new Set(mensajes.map((mensaje) => mensaje.usuarioId))]
+        const perfiles = await prisma.usuario.findMany({ where: { id: { in: ids } }, select: { id: true, avatarUrl: true } })
+        const avatarPorUsuario = new Map(perfiles.map((perfil) => [perfil.id, perfil.avatarUrl]))
+        socket.emit('chat:history', {
+          contexto: solicitado,
+          mensajes: mensajes.reverse().map((mensaje) => ({ ...mensaje, avatarUrl: avatarPorUsuario.get(mensaje.usuarioId) ?? null, creadoEn: mensaje.creadoEn.toISOString() })),
+        })
+      }).catch(() => socket.emit('chat:error', { mensaje: 'No se pudo cargar el historial del chat.' }))
     })
 
     socket.on('room:create', (payload?: { modo?: unknown; cupo?: unknown; radar?: unknown; apuesta?: unknown }) => {
