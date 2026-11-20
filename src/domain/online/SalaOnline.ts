@@ -457,6 +457,7 @@ export class SalaOnline {
   }
 
   get velocidadBolasMs(): number {
+    if (this.modo === 'pvp') return Math.max(1800, this.config.drawIntervalMs - 1000)
     if (this.modo !== 'equipos') return this.config.drawIntervalMs
     if (this.bolasOleada > 0) return 900
     return Math.max(1500, this.config.drawIntervalMs - (this.rondaActual - 1) * 600)

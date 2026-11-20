@@ -307,7 +307,7 @@ export class GestionSalas {
   private procesarGrupo(mesa: MesaElegida): void {
     if (mesa.modo === 'pvp') {
       while (this.grupo(mesa).length >= 2) {
-        this.crearSala(this.tomarGrupo(mesa, 2), false, mesa, 0, true, true)
+        this.crearSala(this.tomarGrupo(mesa, 2), false, mesa, 0, false, true)
       }
     } else {
       while (this.grupo(mesa).length >= mesa.cupo) {
@@ -381,7 +381,7 @@ export class GestionSalas {
     const sala = new SalaOnline(randomUUID(), configPara(mesa, this.config), mesa.modo, chatCanal, anfitrionId ?? null, !!anfitrionId)
     sala.fijarApuesta(apuesta)
     sala.apuestas = Object.fromEntries(humanos.filter((h) => apuesta > 0).map((h) => [h.usuarioId, apuesta]))
-    sala.programarRadar(radarPermitido)
+    sala.programarRadar(radarPermitido && mesa.modo !== 'pvp')
     for (const h of humanos) {
       sala.agregarJugador(h.usuarioId, h.nombre, false, h.socketId, h.avatarUrl)
       this.salaDeUsuario.set(h.usuarioId, sala.id)
