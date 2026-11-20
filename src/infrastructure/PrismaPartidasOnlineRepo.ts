@@ -7,7 +7,9 @@ import { prisma } from './prisma'
 import { otorgarLogro } from './otorgarLogro'
 
 /** Monedas otorgadas al ganador humano de una partida online. */
-export const RECOMPENSA_VICTORIA_ONLINE = 25
+export const RECOMPENSA_VICTORIA_ONLINE = 250
+export const RECOMPENSA_PARTICIPACION_ONLINE = 75
+export const RECOMPENSA_DIAMANTES_ONLINE = 1
 export const XP_PARTICIPACION_ONLINE = 25
 export const XP_VICTORIA_ONLINE = 75
 export const PENALIZACION_XP_ABANDONO = 50
@@ -17,6 +19,34 @@ export const PENALIZACION_RANKING_ABANDONO = 25
 /** Guarda la partida online. Las monedas van en un paso aparte, solo si el ganador es una cuenta de esta base. */
 export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
   constructor(private readonly db: PrismaClient = prisma) {}
+
+  async cobrarApuestas(salaId: string, apuestas: Record<string, number>): Promise<void> {
+    const entries = Object.entries(apuestas).sort(([a], [b]) => a.localeCompare(b))
+    if (!entries.length || entries.some(([, monto]) => !Number.isInteger(monto) || monto < 200 || monto > 2000)) {
+      throw new Error('Cada apuesta debe estar entre 200 y 2.000 monedas.')
+    }
+    await this.db.$transaction(async (tx) => {
+      const detalle = `Apuesta online ${salaId}`
+      let yaCobradas = 0
+      for (const [usuarioId] of entries) {
+        await tx.progreso.upsert({ where: { usuarioId }, update: {}, create: { usuarioId } })
+        await tx.$queryRaw`SELECT "usuarioId" FROM "Progreso" WHERE "usuarioId" = ${usuarioId} FOR UPDATE`
+        if (await tx.historialTransaccion.findFirst({ where: { usuarioId, tipo: 'apuesta', detalle }, select: { id: true } })) {
+          yaCobradas += 1
+        }
+      }
+      if (yaCobradas === entries.length) return
+      if (yaCobradas > 0) throw new Error('La apuesta de esta partida ya quedó parcialmente registrada.')
+      for (const [usuarioId, monto] of entries) {
+        const fila = await tx.progreso.findUniqueOrThrow({ where: { usuarioId } })
+        if (fila.coins < monto) throw new Error('Un jugador de la sala no tiene monedas suficientes para esta apuesta.')
+        const progreso = await tx.progreso.update({ where: { usuarioId }, data: { coins: { decrement: monto } } })
+        await tx.historialTransaccion.create({
+          data: { usuarioId, tipo: 'apuesta', deltaMonedas: -monto, deltaDiamantes: 0, monedasDespues: progreso.coins, diamantesDespues: progreso.diamonds, detalle },
+        })
+      }
+    })
+  }
 
   async registrar(resultado: ResultadoOnline): Promise<{ recompensaMonedas: number }> {
     const idsHumanos = [
@@ -117,17 +147,26 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
     return this.db.$transaction(async (tx) => {
       let recompensaMonedas = 0
       const humanos = resultado.jugadores.filter((jugador) => !jugador.esBot && cuentasReales.has(jugador.id))
+      const ganadorHumano = resultado.ganadorId && humanos.some((jugador) => jugador.id === resultado.ganadorId)
+      const pozo = Object.values(resultado.apuestas ?? {}).reduce((suma, monto) => suma + monto, 0)
+      const reembolsos = new Map<string, number>()
+      if (!ganadorHumano) {
+        for (const [usuarioId, monto] of Object.entries(resultado.apuestas ?? {})) reembolsos.set(usuarioId, monto)
+      }
       const victoriaOnlineValida = humanos.length >= 1 && resultado.jugadores.length >= 2
       for (const jugador of humanos) {
         await tx.progreso.upsert({ where: { usuarioId: jugador.id }, update: {}, create: { usuarioId: jugador.id } })
         await this.inicializarRanking(tx, jugador.id)
         const gano = jugador.id === resultado.ganadorId
-        const monedasPremio = gano ? RECOMPENSA_VICTORIA_ONLINE : 0
+        const premioPozo = gano && ganadorHumano ? pozo : 0
+        const reembolso = reembolsos.get(jugador.id) ?? 0
+        const monedasPremio = (gano ? RECOMPENSA_VICTORIA_ONLINE : RECOMPENSA_PARTICIPACION_ONLINE) + premioPozo + reembolso
         const xpPremio = XP_PARTICIPACION_ONLINE + (gano ? XP_VICTORIA_ONLINE - XP_PARTICIPACION_ONLINE : 0)
         const progreso = await tx.progreso.update({
           where: { usuarioId: jugador.id },
           data: {
             coins: { increment: monedasPremio },
+            diamonds: { increment: gano ? RECOMPENSA_DIAMANTES_ONLINE : 0 },
             xp: { increment: xpPremio },
             progressionInitialized: true,
             rankingPoints: { increment: gano ? RECOMPENSA_VICTORIA_ONLINE : 0 },
@@ -140,12 +179,12 @@ export class PrismaPartidasOnlineRepo implements IRegistroPartidasOnline {
             usuarioId: jugador.id,
             tipo: 'recompensa',
             deltaMonedas: monedasPremio,
-            deltaDiamantes: 0,
+            deltaDiamantes: gano ? RECOMPENSA_DIAMANTES_ONLINE : 0,
             monedasDespues: progreso.coins,
             diamantesDespues: progreso.diamonds,
             detalle: gano
-              ? `Victoria online: +${xpPremio} XP y +${RECOMPENSA_VICTORIA_ONLINE} monedas`
-              : `Participación online: +${xpPremio} XP`,
+              ? `Victoria online: +${xpPremio} XP, +${RECOMPENSA_VICTORIA_ONLINE} monedas y +${RECOMPENSA_DIAMANTES_ONLINE} diamante${premioPozo ? ` · pozo +${premioPozo}` : ''}`
+              : `Participación online: +${xpPremio} XP, +${RECOMPENSA_PARTICIPACION_ONLINE} monedas${reembolso ? ` · reembolso de apuesta +${reembolso}` : ''}`,
           },
         })
         if (gano && victoriaOnlineValida) {

@@ -3,7 +3,11 @@ import {
   CONFIG_ONLINE,
   MENSAJE_SIN_JUGADORES,
   NOMBRES_BOT,
+  configPara,
   type ConfigOnline,
+  type MesaElegida,
+  type ModoMesa,
+  type CupoMesa,
 } from '../domain/online/ConfigOnline'
 import { shuffleInPlace } from '../domain/bingo/geometria'
 import { SalaOnline, type VistaSala } from '../domain/online/SalaOnline'
@@ -17,6 +21,11 @@ export interface MiembroCola {
   socketId: string
 }
 
+interface TicketCola extends MiembroCola {
+  modo: ModoMesa
+  cupo: CupoMesa
+}
+
 export interface OyenteSalas {
   /** Se encontró partida: los humanos deben recibir su vista y unirse a la sala. */
   onEmparejar(sala: SalaOnline, humanos: MiembroCola[]): void
@@ -24,6 +33,8 @@ export interface OyenteSalas {
   /** El radar de la sala se muestra una vez. Lo ven todos. */
   onRadar(sala: SalaOnline, contacto: ContactoRadar): void
   onTerminar(sala: SalaOnline, ganadorId: string | null): void
+  /** La sala sigue en juego: marcador de ronda o cartones nuevos. */
+  onEstado(sala: SalaOnline): void
   onRankingActualizado(): void
   onProgresoActualizado(usuarioIds: string[]): void
   onAbandono(usuarioId: string, salaId: string): void
@@ -38,7 +49,7 @@ export interface OyenteSalas {
  * No conoce socket.io: la infraestructura implementa `OyenteSalas`.
  */
 export class GestionSalas {
-  private readonly cola = new Map<string, MiembroCola>()
+  private readonly cola = new Map<string, TicketCola>()
   private readonly salas = new Map<string, SalaOnline>()
   private readonly salaDeUsuario = new Map<string, string>()
   private readonly timerCantar = new Map<string, ReturnType<typeof setTimeout>>()
@@ -47,7 +58,9 @@ export class GestionSalas {
   private readonly salasPausadas = new Set<string>()
   private readonly timersDesconexion = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly botsReclamando = new Set<string>()
-  private timerRelleno: ReturnType<typeof setTimeout> | null = null
+  private readonly timersRelleno = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly timerRonda = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly rondaEnPausa = new Set<string>()
 
   constructor(
     private readonly oyente: OyenteSalas,
@@ -55,16 +68,22 @@ export class GestionSalas {
     private readonly config: ConfigOnline = CONFIG_ONLINE,
   ) {}
 
-  entrarCola(usuarioId: string, nombre: string, socketId: string, avatarUrl: string | null = null): void {
+  entrarCola(
+    usuarioId: string,
+    nombre: string,
+    socketId: string,
+    avatarUrl: string | null = null,
+    mesa: MesaElegida = { modo: 'mesa', cupo: 4 },
+  ): void {
     this.abandonar(usuarioId)
-    this.cola.set(usuarioId, { usuarioId, nombre, avatarUrl, socketId })
-    this.procesarCola()
+    this.cola.set(usuarioId, { usuarioId, nombre, avatarUrl, socketId, modo: mesa.modo, cupo: mesa.cupo })
+    this.procesarGrupo(mesa)
   }
 
   salirCola(usuarioId: string): void {
     this.cancelarTimerDesconexion(usuarioId)
     this.cola.delete(usuarioId)
-    this.revisarTimerRelleno()
+    this.revisarTimers()
   }
 
   reconectarCola(usuarioId: string, socketId: string): boolean {
@@ -92,7 +111,7 @@ export class GestionSalas {
         const actual = this.cola.get(usuarioId)
         if (actual?.socketId === socketId) {
           this.cola.delete(usuarioId)
-          this.revisarTimerRelleno()
+          this.revisarTimers()
           return
         }
         this.expirarJugadorDesconectado(usuarioId, socketId)
@@ -127,9 +146,13 @@ export class GestionSalas {
       this.rechazar(usuarioId, 'La partida no está en curso.')
       return
     }
+    if (this.rondaEnPausa.has(sala.id)) {
+      this.rechazar(usuarioId, 'Esta ronda ya tiene ganador.')
+      return
+    }
     const resultado = sala.reclamar(usuarioId)
     if (resultado?.won) {
-      this.terminar(sala, usuarioId)
+      this.resolverRonda(sala, usuarioId)
     } else {
       this.rechazar(usuarioId, 'Todavía no completas el patrón con las bolas cantadas.')
     }
@@ -140,7 +163,7 @@ export class GestionSalas {
     this.cola.delete(usuarioId)
     const salaId = this.salaDeUsuario.get(usuarioId)
     if (!salaId) {
-      this.revisarTimerRelleno()
+      this.revisarTimers()
       return
     }
     const sala = this.salas.get(salaId)
@@ -159,7 +182,6 @@ export class GestionSalas {
     return salaId ? (this.salas.get(salaId) ?? null) : null
   }
 
-<<<<<<< HEAD
   /** Abre una sala con estos jugadores. El cupo y el modo vienen de la mesa elegida. */
   iniciarSala(
     miembros: MiembroCola[],
@@ -167,36 +189,66 @@ export class GestionSalas {
     mesa: MesaElegida,
     apuesta = 0,
     radarPermitido = false,
+    chatCanal?: string,
   ): void {
     const vivos = miembros.filter((m) => m.usuarioId && m.socketId)
     if (vivos.length === 0) return
     for (const miembro of vivos) this.abandonar(miembro.usuarioId)
-    this.crearSala(vivos, rellenarConBots, mesa, apuesta, radarPermitido)
-=======
-  /** Abre una sala con estos jugadores y completa los puestos con bots. */
-  iniciarSala(miembros: MiembroCola[], rellenarConBots = true): void {
-    const vivos = miembros.filter((m) => m.usuarioId && m.socketId)
-    if (vivos.length === 0) return
-    for (const miembro of vivos) this.abandonar(miembro.usuarioId)
-    this.crearSala(vivos, rellenarConBots)
->>>>>>> 3765e2ad443039cc8c82d9439f4b98aca1a6d844
+    this.crearSala(vivos, rellenarConBots, mesa, apuesta, radarPermitido, false, chatCanal)
+  }
+
+  iniciarSalaPendienteApuesta(salaId: string, apuestas: Record<string, number>): boolean {
+    const sala = this.salas.get(salaId)
+    if (!sala || sala.estadoActual !== 'waiting') return false
+    const ids = sala.humanos().map((jugador) => jugador.id).sort()
+    const apostadores = Object.keys(apuestas).sort()
+    if (ids.length !== apostadores.length || ids.some((id, i) => id !== apostadores[i])) return false
+    sala.apuestas = { ...apuestas }
+    sala.iniciar()
+    const humanos = sala.humanos().map((jugador) => ({
+      usuarioId: jugador.id, nombre: jugador.nombre, avatarUrl: jugador.avatarUrl, socketId: jugador.socketId ?? '',
+    }))
+    this.oyente.onEmparejar(sala, humanos)
+    this.programarCanto(sala, sala.config.revealDelayMs)
+    return true
+  }
+
+  cancelarSalaPendienteApuesta(salaId: string): void {
+    const sala = this.salas.get(salaId)
+    if (!sala || sala.estadoActual !== 'waiting') return
+    this.salas.delete(salaId)
+    for (const humano of sala.humanos()) this.salaDeUsuario.delete(humano.id)
   }
 
   vistaDe(usuarioId: string): VistaSala | null {
     return this.salaDe(usuarioId)?.vistaPara(usuarioId) ?? null
   }
 
-  private procesarCola(): void {
-    while (this.cola.size >= this.config.minPlayers) {
-      const humanos = this.tomarDeCola(this.config.maxPlayers)
-      this.crearSala(humanos, true)
-    }
-    this.revisarTimerRelleno()
+  private claveMesa(mesa: MesaElegida): string {
+    return `${mesa.modo}:${mesa.cupo}`
   }
 
-  private tomarDeCola(cantidad: number): MiembroCola[] {
-    const tomados: MiembroCola[] = []
+  private grupo(mesa: MesaElegida): TicketCola[] {
+    return [...this.cola.values()].filter((miembro) => miembro.modo === mesa.modo && miembro.cupo === mesa.cupo)
+  }
+
+  private procesarGrupo(mesa: MesaElegida): void {
+    if (mesa.modo === 'pvp') {
+      while (this.grupo(mesa).length >= 2) {
+        this.crearSala(this.tomarGrupo(mesa, 2), false, mesa, 0, true, true)
+      }
+    } else {
+      while (this.grupo(mesa).length >= mesa.cupo) {
+        this.crearSala(this.tomarGrupo(mesa, mesa.cupo), false, mesa, 0, true, true)
+      }
+    }
+    this.revisarTimers()
+  }
+
+  private tomarGrupo(mesa: MesaElegida, cantidad: number): TicketCola[] {
+    const tomados: TicketCola[] = []
     for (const [id, miembro] of this.cola) {
+      if (miembro.modo !== mesa.modo || miembro.cupo !== mesa.cupo) continue
       tomados.push(miembro)
       this.cola.delete(id)
       if (tomados.length >= cantidad) break
@@ -204,51 +256,64 @@ export class GestionSalas {
     return tomados
   }
 
-  private revisarTimerRelleno(): void {
-    if (this.cola.size > 0 && !this.timerRelleno) {
-      this.timerRelleno = setTimeout(() => this.rellenarConBots(), this.config.fillWithBotsAfterMs)
-      return
+  private revisarTimers(): void {
+    const activos = new Map<string, MesaElegida>()
+    for (const miembro of this.cola.values()) {
+      const mesa = { modo: miembro.modo, cupo: miembro.cupo }
+      activos.set(this.claveMesa(mesa), mesa)
     }
-    if (this.cola.size === 0 && this.timerRelleno) {
-      clearTimeout(this.timerRelleno)
-      this.timerRelleno = null
+    for (const [clave, timer] of this.timersRelleno) {
+      const mesa = activos.get(clave)
+      if (!mesa || mesa.modo === 'pvp' || this.grupo(mesa).length === 0 || this.grupo(mesa).length >= mesa.cupo) {
+        clearTimeout(timer)
+        this.timersRelleno.delete(clave)
+      }
+    }
+    for (const [clave, mesa] of activos) {
+      if (mesa.modo === 'pvp' || this.grupo(mesa).length === 0 || this.grupo(mesa).length >= mesa.cupo || this.timersRelleno.has(clave)) continue
+      this.timersRelleno.set(clave, setTimeout(() => this.rellenarGrupo(mesa), this.config.fillWithBotsAfterMs))
     }
   }
 
-<<<<<<< HEAD
+  private rellenarGrupo(mesa: MesaElegida): void {
+    const clave = this.claveMesa(mesa)
+    const timer = this.timersRelleno.get(clave)
+    if (timer) clearTimeout(timer)
+    this.timersRelleno.delete(clave)
+    const esperando = this.grupo(mesa)
+    if (mesa.modo === 'pvp' || esperando.length === 0 || esperando.length >= mesa.cupo) {
+      this.revisarTimers()
+      return
+    }
+    const minimo = Math.ceil(mesa.cupo / 2)
+    if (esperando.length < minimo) {
+      this.oyente.onAlertaCola(esperando, `Aún faltan jugadores: se necesitan ${minimo} para iniciar esta mesa.`)
+      this.revisarTimers()
+      return
+    }
+    this.oyente.onAlertaCola(esperando, MENSAJE_SIN_JUGADORES)
+    this.crearSala(this.tomarGrupo(mesa, Math.min(esperando.length, mesa.cupo)), true, mesa, 0, true, true)
+  }
+
   private crearSala(
     humanos: MiembroCola[],
     conBots: boolean,
     mesa: MesaElegida,
     apuesta = 0,
     radarPermitido = true,
+    esperarApuesta = false,
+    chatCanal?: string,
   ): void {
     if (humanos.length === 0) return
-    const sala = new SalaOnline(randomUUID(), configPara(mesa, this.config), mesa.modo)
+    const sala = new SalaOnline(randomUUID(), configPara(mesa, this.config), mesa.modo, chatCanal)
     sala.fijarApuesta(apuesta)
+    sala.apuestas = Object.fromEntries(humanos.filter((h) => apuesta > 0).map((h) => [h.usuarioId, apuesta]))
     sala.programarRadar(radarPermitido)
-=======
-  private rellenarConBots(): void {
-    this.timerRelleno = null
-    if (this.cola.size === 0 || this.cola.size >= this.config.minPlayers) {
-      this.revisarTimerRelleno()
-      return
-    }
-    const humanos = [...this.cola.values()]
-    this.oyente.onAlertaCola(humanos, MENSAJE_SIN_JUGADORES)
-    const tomados = this.tomarDeCola(this.config.minPlayers)
-    this.crearSala(tomados, true)
-  }
-
-  private crearSala(humanos: MiembroCola[], conBots: boolean): void {
-    if (humanos.length === 0) return
-    const sala = new SalaOnline(randomUUID(), this.config)
->>>>>>> 3765e2ad443039cc8c82d9439f4b98aca1a6d844
     for (const h of humanos) {
       sala.agregarJugador(h.usuarioId, h.nombre, false, h.socketId, h.avatarUrl)
       this.salaDeUsuario.set(h.usuarioId, sala.id)
     }
-    if (conBots) {
+    if (conBots && mesa.modo !== 'pvp') {
       const perfiles = shuffleInPlace([...NOMBRES_BOT])
       let siguientePerfil = 0
       while (!sala.llena) {
@@ -257,10 +322,11 @@ export class GestionSalas {
         sala.agregarJugador(`bot:${randomUUID()}`, nombre, true)
       }
     }
+    sala.sellarEquipos()
     this.salas.set(sala.id, sala)
-    sala.iniciar()
+    if (!esperarApuesta) sala.iniciar()
     this.oyente.onEmparejar(sala, humanos)
-    this.programarCanto(sala, sala.config.revealDelayMs)
+    if (!esperarApuesta) this.programarCanto(sala, sala.config.revealDelayMs)
   }
 
   private programarCanto(sala: SalaOnline, esperaMs: number): void {
@@ -274,10 +340,10 @@ export class GestionSalas {
   }
 
   private cantar(sala: SalaOnline): void {
-    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
+    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id) || this.rondaEnPausa.has(sala.id)) return
     const numero = sala.cantar()
     if (numero === null) {
-      this.terminar(sala, null)
+      this.resolverRonda(sala, null)
       return
     }
     const contacto = sala.tomarRadar()
@@ -288,7 +354,7 @@ export class GestionSalas {
   }
 
   private reaccionBots(sala: SalaOnline): void {
-    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
+    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id) || this.rondaEnPausa.has(sala.id)) return
     for (const jugador of sala.jugadores) {
       if (!jugador.esBot) continue
       if (this.botsReclamando.has(jugador.id)) continue
@@ -299,39 +365,81 @@ export class GestionSalas {
       const espera = demoraMinima + Math.floor(Math.random() * (demoraMaxima - demoraMinima))
       setTimeout(() => {
         this.botsReclamando.delete(jugador.id)
-        if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
+        if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id) || this.rondaEnPausa.has(sala.id)) return
         if (!sala.botCompleta(jugador.id)) return
-        this.terminar(sala, jugador.id)
+        this.resolverRonda(sala, jugador.id)
       }, espera)
     }
   }
 
-  private terminar(sala: SalaOnline, ganadorId: string | null): void {
-    if (sala.estadoActual === 'finished') return
-    const timer = this.timerCantar.get(sala.id)
-    if (timer) {
-      clearTimeout(timer)
-      this.timerCantar.delete(sala.id)
+  /**
+   * En equipos una ronda ganada suma un punto. A 2 puntos, o al cerrar la tercera, termina la serie.
+   * Mientras tanto se muestran el marcador y, unos segundos después, cartones nuevos.
+   */
+  private resolverRonda(sala: SalaOnline, ganadorId: string | null): void {
+    if (sala.estadoActual === 'finished' || this.rondaEnPausa.has(sala.id)) return
+    if (sala.modo !== 'equipos') {
+      this.terminar(sala, ganadorId)
+      return
     }
+    this.rondaEnPausa.add(sala.id)
+    const sigue = sala.anotarRonda(ganadorId)
+    this.detenerCanto(sala)
+    if (!sigue) {
+      this.rondaEnPausa.delete(sala.id)
+      this.terminar(sala, ganadorId)
+      return
+    }
+    this.oyente.onEstado(sala)
+    const timer = setTimeout(() => {
+      this.timerRonda.delete(sala.id)
+      this.rondaEnPausa.delete(sala.id)
+      if (!this.salas.has(sala.id) || sala.estadoActual !== 'playing') return
+      sala.abrirSiguienteRonda()
+      this.oyente.onEstado(sala)
+      this.programarCanto(sala, 4000)
+    }, 4500)
+    this.timerRonda.set(sala.id, timer)
+  }
+
+  private detenerCanto(sala: SalaOnline): void {
+    const timer = this.timerCantar.get(sala.id)
+    if (timer) clearTimeout(timer)
+    this.timerCantar.delete(sala.id)
     this.deadlineCanto.delete(sala.id)
     this.restanteCantoPausado.delete(sala.id)
+  }
+
+  private cancelarRonda(salaId: string): void {
+    const timer = this.timerRonda.get(salaId)
+    if (timer) clearTimeout(timer)
+    this.timerRonda.delete(salaId)
+    this.rondaEnPausa.delete(salaId)
+  }
+
+  private terminar(sala: SalaOnline, ganadorId: string | null): void {
+    if (sala.estadoActual === 'finished') return
+    this.detenerCanto(sala)
+    this.cancelarRonda(sala.id)
     this.salasPausadas.delete(sala.id)
     const ganador = sala.jugadores.find((j) => j.id === ganadorId) ?? null
     sala.finalizar(ganadorId)
     this.oyente.onTerminar(sala, ganadorId)
 
+    const serie = sala.serie
     const resultado: ResultadoOnline = {
       salaId: sala.id,
       size: sala.config.size,
       winModes: [sala.metodoVictoria],
       ganadorId,
-      ganadorNombre: ganador?.nombre ?? null,
+      ganadorNombre: serie?.equipoGanador ? `Equipo ${serie.equipoGanador}` : ganador?.nombre ?? null,
       duracionSeg: sala.duracionSeg,
+      apuestas: { ...sala.apuestas },
       jugadores: sala.jugadores.map((j) => ({
         id: j.id,
         nombre: j.nombre,
         esBot: j.esBot,
-        gano: j.id === ganadorId,
+        gano: j.ganador,
         carton: j.carton.toSnapshot(),
       })),
     }
@@ -398,7 +506,7 @@ export class GestionSalas {
   }
 
   private pausarSala(sala: SalaOnline): void {
-    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id)) return
+    if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id) || this.rondaEnPausa.has(sala.id)) return
     const timer = this.timerCantar.get(sala.id)
     if (timer) clearTimeout(timer)
     this.timerCantar.delete(sala.id)
@@ -409,6 +517,7 @@ export class GestionSalas {
   }
 
   private reanudarSiSePuede(sala: SalaOnline): void {
+    if (this.rondaEnPausa.has(sala.id)) return
     if (!this.salasPausadas.has(sala.id) || this.tieneDesconexionPendiente(sala)) return
     this.salasPausadas.delete(sala.id)
     const restante = this.restanteCantoPausado.get(sala.id) ?? sala.config.drawIntervalMs

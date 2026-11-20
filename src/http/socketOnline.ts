@@ -10,13 +10,16 @@ import { otorgarLogro } from '../infrastructure/otorgarLogro'
 import { pagarDiamantesCaza, pagarExperienciaCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
 import { origenPermitido } from './seguridad'
-
 import { RECARGA_BOOSTER_MS, rechazoDeObjetivo } from '../domain/online/efectosBooster'
 import { CONFIG_ONLINE, mesaValida, type MesaElegida } from '../domain/online/ConfigOnline'
 import { ESPERA_LOCALIZADOR, ID_LOCALIZADOR } from '../domain/online/RadarSala'
 
-
-const CUPO_SALA = 4
+function leerMesa(payload: { modo?: unknown; cupo?: unknown } | undefined): MesaElegida | null {
+  if (!payload || (payload.modo === undefined && payload.cupo === undefined)) {
+    return { modo: 'mesa', cupo: 4 }
+  }
+  return mesaValida(payload.modo, payload.cupo)
+}
 const PUNTOS_POR_VICTORIA = 25
 
 function secreto(): string {
@@ -42,6 +45,7 @@ export function montarOnline(servidor: HttpServer): Server {
 
   const sesiones = new Map<string, Sesion>()
   const recargasBooster = new Map<string, number>()
+  const apuestasPendientes = new Map<string, { montos: Map<string, number>; timer: ReturnType<typeof setTimeout>; venceEn: number; cobrando: boolean }>()
 
   const emitirVista = (usuarioId: string, socketId: string, sala: SalaOnline, evento: string) => {
     io.to(socketId).emit(evento, sala.vistaPara(usuarioId))
@@ -55,12 +59,29 @@ export function montarOnline(servidor: HttpServer): Server {
   const oyente: OyenteSalas = {
     onEmparejar(sala, humanos) {
       void (async () => {
-        for (const humano of humanos) {
-          try {
-            sala.anotarEspera(humano.usuarioId, await bajarEsperaLocalizador(humano.usuarioId))
-          } catch (error) {
-            const mensaje = error instanceof Error ? error.message : 'error desconocido'
-            console.error(`No se pudo actualizar la espera del localizador: ${mensaje}`)
+        const pendiente = sala.estadoActual === 'waiting'
+        if (pendiente && !apuestasPendientes.has(sala.id)) {
+          const venceEn = Date.now() + 90_000
+          const timer = setTimeout(() => {
+            const actual = apuestasPendientes.get(sala.id)
+            if (!actual) return
+            apuestasPendientes.delete(sala.id)
+            io.to(sala.id).emit('betting:cancelled', { mensaje: 'La elección de apuesta venció; vuelve a buscar partida.' })
+            gestion.cancelarSalaPendienteApuesta(sala.id)
+            io.in(sala.id).socketsLeave(sala.id)
+          }, 90_000)
+          apuestasPendientes.set(sala.id, { montos: new Map(), timer, venceEn, cobrando: false })
+        }
+        // El emparejamiento global primero crea una sala en espera para las apuestas.
+        // El cooldown debe bajar al iniciar la partida, no durante esa pantalla previa.
+        if (!pendiente) {
+          for (const humano of humanos) {
+            try {
+              sala.anotarEspera(humano.usuarioId, await bajarEsperaLocalizador(humano.usuarioId))
+            } catch (error) {
+              const mensaje = error instanceof Error ? error.message : 'error desconocido'
+              console.error(`No se pudo actualizar la espera del localizador: ${mensaje}`)
+            }
           }
         }
         for (const humano of humanos) {
@@ -68,14 +89,25 @@ export function montarOnline(servidor: HttpServer): Server {
           if (!socket) continue
           void socket.join(sala.id)
           socket.emit('match:found', { salaId: sala.id })
+          if (pendiente) {
+            const apuesta = apuestasPendientes.get(sala.id)
+            socket.emit('betting:open', {
+              salaId: sala.id,
+              jugadores: sala.humanos().map((jugador) => ({ id: jugador.id, nombre: jugador.nombre, confirmado: apuesta?.montos.has(jugador.id) ?? false })),
+              venceEn: apuesta?.venceEn,
+            })
+          }
           emitirVista(humano.usuarioId, humano.socketId, sala, 'room:state')
+        }
+        if (pendiente) {
+          const apuesta = apuestasPendientes.get(sala.id)
+          if (apuesta) io.to(sala.id).emit('betting:state', { jugadores: sala.humanos().map((j) => ({ id: j.id, nombre: j.nombre, confirmado: apuesta.montos.has(j.id) })) })
         }
       })()
     },
     onCantar(sala, numero) {
       io.to(sala.id).emit('ball:called', { salaId: sala.id, numero })
     },
-
     onRadar(sala, contacto) {
       io.to(sala.id).emit('radar:evento', contacto)
     },
@@ -84,7 +116,6 @@ export function montarOnline(servidor: HttpServer): Server {
         if (humano.socketId && humano.conectado) emitirVista(humano.id, humano.socketId, sala, 'room:state')
       }
     },
-
     onTerminar(sala, ganadorId) {
       const ganador = sala.jugadores.find((j) => j.id === ganadorId) ?? null
       for (const humano of sala.humanos()) {
@@ -96,6 +127,9 @@ export function montarOnline(servidor: HttpServer): Server {
         salaId: sala.id,
         ganadorId,
         ganadorNombre: ganador?.nombre ?? null,
+        pozo: Object.values(sala.apuestas).reduce((total, monto) => total + monto, 0),
+        pozoPagado: !!ganador && !ganador.esBot,
+        diamantesPremio: ganador && !ganador.esBot ? 1 : 0,
       })
       io.in(sala.id).socketsLeave(sala.id)
     },
@@ -247,12 +281,10 @@ export function montarOnline(servidor: HttpServer): Server {
     anfitrionId: string
     miembros: MiembroCola[]
     completarConBots: boolean
-
     modo: MesaElegida['modo']
     cupo: MesaElegida['cupo']
-    apuesta: 0 | 20 | 100
+    apuesta: number
     radar: boolean
-3765e2ad443039cc8c82d9439f4b98aca1a6d844
   }
 
   const esperas = new Map<string, Espera>()
@@ -298,13 +330,11 @@ export function montarOnline(servidor: HttpServer): Server {
     codigo: espera.codigo,
     anfitrionId: espera.anfitrionId,
     completarConBots: espera.completarConBots,
-
     modo: espera.modo,
     cupo: espera.cupo,
     permiteBots: espera.modo !== 'pvp',
     apuesta: espera.apuesta,
     escaneo: espera.radar,
-
     jugadores: espera.miembros.map((miembro) => ({
       id: miembro.usuarioId,
       nombre: miembro.nombre,
@@ -458,31 +488,60 @@ export function montarOnline(servidor: HttpServer): Server {
         id: `${Date.now()}-${socket.id}`,
         nombre: sesion.nombre,
         texto,
+        creadoEn: new Date().toISOString(),
       }
       const codigo = esperaDe.get(sesion.usuarioId)
       const espera = codigo ? esperas.get(codigo) : undefined
-      if (espera) {
-        for (const miembro of espera.miembros) {
-          io.to(miembro.socketId).emit('chat:message', mensaje)
-        }
-        return
-      }
       const sala = gestion.salaDe(sesion.usuarioId)
-      if (sala) {
-        io.to(sala.id).emit('chat:message', mensaje)
-        return
-      }
-      io.to('lobby-online').emit('chat:message', mensaje)
+      const contexto = espera ? `sala:${espera.codigo}` : sala ? sala.chatCanal : 'lobby-online'
+      void (async () => {
+        try {
+          const guardado = await prisma.chatOnlineMensaje.create({
+            data: { canal: contexto, usuarioId: sesion.usuarioId, nombre: sesion.nombre, texto },
+            select: { id: true, nombre: true, texto: true, creadoEn: true },
+          })
+          const persistido = { ...guardado, creadoEn: guardado.creadoEn.toISOString() }
+          if (espera) for (const miembro of espera.miembros) io.to(miembro.socketId).emit('chat:message', persistido)
+          else if (sala) io.to(sala.id).emit('chat:message', persistido)
+          else io.to('lobby-online').emit('chat:message', persistido)
+        } catch {
+          socket.emit('chat:error', { mensaje: 'No se pudo guardar el mensaje.' })
+        }
+      })()
     })
 
+    socket.on('chat:history', (payload: { contexto?: string }) => {
+      const solicitado = String(payload?.contexto ?? '')
+      const codigo = esperaDe.get(sesion.usuarioId)
+      const espera = codigo ? esperas.get(codigo) : undefined
+      const sala = gestion.salaDe(sesion.usuarioId)
+      const permitido = solicitado === 'lobby-online'
+        ? !espera && !sala
+        : espera ? solicitado === `sala:${espera.codigo}`
+          : sala ? solicitado === `partida:${sala.id}` || solicitado === sala.chatCanal
+            : false
+      if (!permitido) return
+      const canal = sala && solicitado === `partida:${sala.id}` ? sala.chatCanal : solicitado
+      void prisma.chatOnlineMensaje.findMany({
+        where: { canal }, orderBy: { creadoEn: 'desc' }, take: 100,
+        select: { id: true, nombre: true, texto: true, creadoEn: true },
+      }).then((mensajes) => socket.emit('chat:history', {
+        contexto: solicitado,
+        mensajes: mensajes.reverse().map((mensaje) => ({ ...mensaje, creadoEn: mensaje.creadoEn.toISOString() })),
+      })).catch(() => socket.emit('chat:error', { mensaje: 'No se pudo cargar el historial del chat.' }))
+    })
 
-    socket.on('room:create', (payload?: { modo?: unknown; cupo?: unknown; radar?: unknown }) => {
+    socket.on('room:create', (payload?: { modo?: unknown; cupo?: unknown; radar?: unknown; apuesta?: unknown }) => {
+      const montoApuesta = Number(payload?.apuesta ?? 200)
+      if (!Number.isInteger(montoApuesta) || montoApuesta < 200 || montoApuesta > 2000) {
+        socket.emit('room:error', { mensaje: 'La apuesta debe estar entre 200 y 2.000 monedas.' })
+        return
+      }
       const mesa = leerMesa(payload)
       if (!mesa) {
         socket.emit('room:error', { mensaje: 'Esa mesa no existe. Elige 4, 6, 8, PvP o equipos.' })
         return
       }
-
       gestion.salirCola(sesion.usuarioId)
       gestion.abandonar(sesion.usuarioId)
       caza.salir(sesion.usuarioId)
@@ -493,12 +552,10 @@ export function montarOnline(servidor: HttpServer): Server {
         anfitrionId: sesion.usuarioId,
         miembros: [miembroDe(socket.id, sesion)],
         completarConBots: false,
-
         modo: mesa.modo,
         cupo: mesa.cupo,
-        apuesta: 0,
+        apuesta: montoApuesta,
         radar: payload?.radar === true,
-3765e2ad443039cc8c82d9439f4b98aca1a6d844
       }
       esperas.set(espera.codigo, espera)
       esperaDe.set(sesion.usuarioId, espera.codigo)
@@ -525,7 +582,7 @@ export function montarOnline(servidor: HttpServer): Server {
         emitirEspera(espera)
         return
       }
-      if (espera.miembros.length >= CUPO_SALA) {
+      if (espera.miembros.length >= espera.cupo) {
         socket.emit('room:error', { mensaje: 'La sala ya está llena.' })
         return
       }
@@ -555,34 +612,89 @@ export function montarOnline(servidor: HttpServer): Server {
       emitirEspera(espera)
     })
 
-    socket.on('room:start', () => {
+    socket.on('room:apuesta', (payload: { monto?: number }) => {
+      void (async () => {
+        const codigo = esperaDe.get(sesion.usuarioId)
+        const espera = codigo ? esperas.get(codigo) : undefined
+        if (!espera) return
+        const monto = Number(payload?.monto)
+        if (!Number.isInteger(monto) || monto < 200 || monto > 2000) {
+          socket.emit('room:error', { mensaje: 'La apuesta debe estar entre 200 y 2.000 monedas.' })
+          return
+        }
+        if (monto === espera.apuesta) return
+        if (espera.anfitrionId !== sesion.usuarioId) {
+          socket.emit('room:error', { mensaje: 'Solo el anfitrión puede cambiar la apuesta.' })
+          return
+        }
+        espera.apuesta = monto
+        emitirEspera(espera)
+      })()
+    })
+
+    socket.on('room:start', (payload?: { modo?: 'sala' | 'bots' }) => {
+      void (async () => {
       const codigo = esperaDe.get(sesion.usuarioId)
       const espera = codigo ? esperas.get(codigo) : undefined
       if (!espera || espera.anfitrionId !== sesion.usuarioId) {
         socket.emit('room:error', { mensaje: 'Solo quien creó la sala puede empezarla.' })
         return
       }
-      if (espera.miembros.length < CUPO_SALA && !espera.completarConBots) {
-        socket.emit('room:error', { mensaje: 'Espera a que se llene la sala o activa el relleno con bots.' })
+      const arranque = payload?.modo === 'bots' || payload?.modo === 'sala'
+        ? payload.modo
+        : (espera.completarConBots ? 'bots' : 'sala')
+      if (arranque === 'bots' && espera.modo === 'pvp') {
+        socket.emit('room:error', { mensaje: 'El duelo no admite rivales invocados.' })
         return
       }
+      if (arranque === 'bots' && espera.miembros.length >= espera.cupo) {
+        socket.emit('room:error', { mensaje: 'La sala ya está llena. Empieza con los jugadores que están dentro.' })
+        return
+      }
+      const minimoSala = espera.modo === 'pvp' ? 2 : Math.ceil(espera.cupo / 2)
+      if (arranque === 'sala' && espera.miembros.length < minimoSala) {
+        socket.emit('room:error', { mensaje: `Se necesitan al menos ${minimoSala} jugadores para iniciar esta sala.` })
+        return
+      }
+      if (!Number.isInteger(espera.apuesta) || espera.apuesta < 200 || espera.apuesta > 2000) {
+        socket.emit('room:error', { mensaje: 'La apuesta debe estar entre 200 y 2.000 monedas.' })
+        return
+      }
+      try {
+        await repo.cobrarApuestas(espera.codigo, Object.fromEntries(espera.miembros.map((miembro) => [miembro.usuarioId, espera.apuesta])))
+      } catch (error) {
+        socket.emit('room:error', { mensaje: error instanceof Error ? error.message : 'No se pudieron cobrar las apuestas.' })
+          return
+      }
+      for (const miembro of espera.miembros) refrescarPerfil(miembro.usuarioId)
+      const mesa = { modo: espera.modo, cupo: espera.cupo }
+      const apuesta = espera.apuesta
       const miembros = espera.miembros.map((miembro) => ({ ...miembro }))
       esperas.delete(espera.codigo)
       for (const miembro of miembros) {
         esperaDe.delete(miembro.usuarioId)
         cancelarTemporizadorSala(miembro.usuarioId)
       }
-
-      gestion.iniciarSala(miembros, arranque === 'bots', mesa, apuesta, espera.radar)
-
+      gestion.iniciarSala(miembros, arranque === 'bots', mesa, apuesta, espera.radar, `sala:${espera.codigo}`)
       for (const miembro of miembros) {
         if (!io.sockets.sockets.has(miembro.socketId)) gestion.desconectar(miembro.usuarioId, miembro.socketId)
       }
+      })()
     })
 
     socket.on('game:leave', (ack?: () => void) => {
       void (async () => {
         const sala = gestion.salaDe(sesion.usuarioId)
+        const pendiente = sala ? apuestasPendientes.get(sala.id) : undefined
+        if (sala?.estadoActual === 'waiting' && pendiente && !pendiente.cobrando) {
+          clearTimeout(pendiente.timer)
+          apuestasPendientes.delete(sala.id)
+          io.to(sala.id).emit('betting:cancelled', { mensaje: 'La partida se canceló porque un jugador salió antes de confirmar todas las apuestas.' })
+          gestion.cancelarSalaPendienteApuesta(sala.id)
+          io.in(sala.id).socketsLeave(sala.id)
+          if (typeof ack === 'function') ack()
+          return
+        }
         const correspondePenalizacion = sala?.estadoActual === 'playing'
         try {
           if (sala && correspondePenalizacion) await repo.penalizarAbandono(sesion.usuarioId, sala.id)
@@ -619,6 +731,11 @@ export function montarOnline(servidor: HttpServer): Server {
       const objetivo = sala.jugadores.some((jugador) => jugador.id === objetivoId)
       if (!recarga || !objetivo) {
         socket.emit('booster:rechazo', { mensaje: 'Booster u objetivo inválido.' })
+        return
+      }
+      const rechazo = rechazoDeObjetivo(boosterId, sesion.usuarioId, objetivoId)
+      if (rechazo) {
+        socket.emit('booster:rechazo', { mensaje: rechazo })
         return
       }
       const claveRecarga = `${sesion.usuarioId}:${boosterId}`
@@ -680,7 +797,12 @@ export function montarOnline(servidor: HttpServer): Server {
       })()
     })
 
-    socket.on('queue:join', () => {
+    socket.on('queue:join', (payload?: { modo?: unknown; cupo?: unknown }) => {
+      const mesa = leerMesa(payload)
+      if (!mesa) {
+        socket.emit('queue:warning', { mensaje: 'Esa mesa no existe. Elige 4, 6, 8, PvP o equipos.' })
+        return
+      }
       caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
       salirSalaCaza(sesion.usuarioId)
@@ -690,13 +812,58 @@ export function montarOnline(servidor: HttpServer): Server {
         avatarUrl: sesion.avatarUrl,
         socketId: socket.id,
       }
-      socket.emit('queue:joined', { usuarioId: sesion.usuarioId })
-      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId, miembro.avatarUrl)
+      socket.emit('queue:joined', { usuarioId: sesion.usuarioId, modo: mesa.modo, cupo: mesa.cupo })
+      gestion.entrarCola(miembro.usuarioId, miembro.nombre, miembro.socketId, miembro.avatarUrl, mesa)
     })
 
     socket.on('queue:leave', () => {
       gestion.salirCola(sesion.usuarioId)
       socket.emit('queue:left', { usuarioId: sesion.usuarioId })
+    })
+
+    socket.on('betting:confirm', (payload: { salaId?: string; monto?: number }) => {
+      const salaId = String(payload?.salaId ?? '')
+      const sala = gestion.salaDe(sesion.usuarioId)
+      const pendiente = apuestasPendientes.get(salaId)
+      const monto = Number(payload?.monto)
+      if (!sala || sala.id !== salaId || sala.estadoActual !== 'waiting' || !pendiente || pendiente.cobrando) return
+      if (!Number.isInteger(monto) || monto < 200 || monto > 2000) {
+        socket.emit('betting:error', { mensaje: 'La apuesta debe estar entre 200 y 2.000 monedas.' })
+        return
+      }
+      pendiente.montos.set(sesion.usuarioId, monto)
+      const jugadores = sala.humanos().map((j) => ({ id: j.id, nombre: j.nombre, confirmado: pendiente.montos.has(j.id) }))
+      io.to(sala.id).emit('betting:state', { salaId, jugadores })
+      const humanos = sala.humanos()
+      if (humanos.some((jugador) => !pendiente.montos.has(jugador.id))) return
+      pendiente.cobrando = true
+      const apuestas = Object.fromEntries(humanos.map((jugador) => [jugador.id, pendiente.montos.get(jugador.id)!]))
+      void repo.cobrarApuestas(sala.id, apuestas).then(() => {
+        const actual = apuestasPendientes.get(sala.id)
+        if (!actual) return
+        clearTimeout(actual.timer)
+        apuestasPendientes.delete(sala.id)
+        io.to(sala.id).emit('betting:closed', { salaId, apuestas })
+        for (const humano of humanos) refrescarPerfil(humano.id)
+        if (!gestion.iniciarSalaPendienteApuesta(sala.id, apuestas)) {
+          io.to(sala.id).emit('betting:cancelled', { mensaje: 'No se pudo iniciar la partida. Vuelve al lobby.' })
+        }
+      }).catch((error: unknown) => {
+        pendiente.cobrando = false
+        pendiente.montos.clear()
+        io.to(sala.id).emit('betting:error', { mensaje: error instanceof Error ? error.message : 'No se pudieron cobrar las apuestas.' })
+        io.to(sala.id).emit('betting:state', { salaId, jugadores: humanos.map((j) => ({ id: j.id, nombre: j.nombre, confirmado: false })) })
+      })
+    })
+
+    socket.on('pvp:marcar', (payload: { indice?: number; activa?: boolean }) => {
+      const sala = gestion.salaDe(sesion.usuarioId)
+      if (!sala) return
+      const indice = Number(payload?.indice)
+      if (!Number.isInteger(indice)) return
+      const marcas = sala.fijarMarca(sesion.usuarioId, indice, payload?.activa === true)
+      if (!marcas) return
+      io.to(sala.id).emit('pvp:marcas', { jugadorId: sesion.usuarioId, marcas })
     })
 
     socket.on('game:claim', () => {
@@ -714,12 +881,10 @@ export function montarOnline(servidor: HttpServer): Server {
         anfitrionId: sesion.usuarioId,
         miembros: [miembroDe(socket.id, sesion)],
         completarConBots: false,
-
         modo: 'mesa',
         cupo: 4,
         apuesta: 0,
         radar: false,
-
       }
       salasCaza.set(sala.codigo, sala)
       cazaDe.set(sesion.usuarioId, sala.codigo)

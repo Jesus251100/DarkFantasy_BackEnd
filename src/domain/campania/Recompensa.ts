@@ -2,16 +2,17 @@ import { logroDeNivel } from '../logros/Logros'
 import type { Jugador } from './Jugador'
 
 export const COIN_REWARD: Record<number, number> = {
-  1: 50, 2: 70, 3: 90, 4: 110, 5: 130, 6: 150, 7: 170, 8: 200, 9: 230, 10: 350,
+  1: 250, 2: 300, 3: 350, 4: 400, 5: 450, 6: 500, 7: 550, 8: 600, 9: 700, 10: 850,
 }
 
-export const DIAMOND_REWARD: Record<number, number> = { 10: 5 }
+export const DIAMOND_REWARD: Record<number, number> = { 6: 2, 7: 3, 8: 4, 9: 5, 10: 8 }
 
 /** Monedas si ya habías ganado ese nivel antes. */
 export function coinsPorRepeticion(level: number): number {
-  if (level >= 10) return 30
-  if (level >= 5) return 20
-  return 10
+  if (level >= 10) return 250
+  if (level >= 8) return 200
+  if (level >= 5) return 150
+  return 100
 }
 
 export class Recompensa {
