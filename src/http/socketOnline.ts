@@ -23,8 +23,6 @@ const PUNTOS_POR_VICTORIA = 25
 const CORREOS_CUENTAS_PRUEBA = new Set([
   'jugador@darkfantasy.local',
   'jugador@darkfantasy.com',
-  'admin@darkfantasy.local',
-  'admin@darkfantasy.com',
 ])
 
 function secreto(): string {

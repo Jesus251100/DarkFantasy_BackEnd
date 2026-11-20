@@ -9,7 +9,6 @@ import { prisma } from './infrastructure/prisma'
 import { resumenConexion } from './infrastructure/conexionBd'
 import rutasAuth from './http/rutasAuth'
 import rutasCampania from './http/rutasCampania'
-import rutasAdmin from './http/rutasAdmin'
 import { montarOnline } from './http/socketOnline'
 import { origenPermitido } from './http/seguridad'
 import { validarConfiguracionAuth } from './http/auth'
@@ -95,7 +94,6 @@ app.get('/api/red-local', (_req, res) => {
 
 app.use('/api/auth', rutasAuth)
 app.use('/api/campania', rutasCampania)
-app.use('/api/admin', rutasAdmin)
 
 montarOnline(servidor)
 
@@ -104,7 +102,7 @@ servidor.listen(port, '0.0.0.0', () => {
   console.log(`PostgreSQL: ${resumenConexion()}`)
   void aplicarIntegridad(prisma)
     .then(() => {
-      console.log('Restricciones activas: saldo, nivel y rol no aceptan datos inválidos.')
+      console.log('Restricciones activas: saldos y niveles válidos; cuentas normalizadas como jugadores.')
       return aplicarDisparadores(prisma)
     })
     .then(() => console.log('Disparadores activos: código, victoria, alcancía, recibo y mochila.'))

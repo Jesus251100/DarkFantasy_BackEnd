@@ -66,7 +66,7 @@ async function main() {
     WHERE p."progressionInitialized" = false
   `
   await aplicarIntegridad(prisma)
-  console.log('Restricciones de saldo, nivel y rol aplicadas.')
+  console.log('Restricciones de saldo y nivel aplicadas.')
 }
 
 main()

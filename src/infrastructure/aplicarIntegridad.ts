@@ -30,11 +30,12 @@ BEGIN
       CHECK ("highestUnlocked" >= 1 AND "highestUnlocked" <= 10);
   END IF;
 
-  IF to_regclass('public."Usuario"') IS NOT NULL
-     AND NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'usuario_rol_valido') THEN
+  IF to_regclass('public."Usuario"') IS NOT NULL THEN
+    UPDATE "Usuario" SET rol = 'jugador' WHERE rol <> 'jugador';
+    ALTER TABLE "Usuario" DROP CONSTRAINT IF EXISTS usuario_rol_valido;
     ALTER TABLE "Usuario"
       ADD CONSTRAINT usuario_rol_valido
-      CHECK (rol IN ('jugador', 'administrador'));
+      CHECK (rol = 'jugador');
   END IF;
 
   IF to_regclass('public."Partida"') IS NOT NULL

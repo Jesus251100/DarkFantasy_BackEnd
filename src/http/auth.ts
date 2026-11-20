@@ -5,7 +5,7 @@ import { prisma } from '../infrastructure/prisma'
 export type JwtPayload = {
   sub: string
   correo: string
-  rol: 'jugador' | 'administrador'
+  rol: 'jugador'
   nombre: string
   nacionalidad?: string | null
   genero?: string | null
@@ -58,27 +58,15 @@ export async function authObligatoria(req: Request, res: Response, next: NextFun
     res.status(401).json({ error: 'La cuenta ya no está disponible. Inicia sesión de nuevo.' })
     return
   }
-  if (actual.rol !== 'jugador' && actual.rol !== 'administrador') {
-    res.status(403).json({ error: 'El rol de esta cuenta no está autorizado.' })
-    return
-  }
   req.usuario = {
     ...data,
     sub: actual.id,
     correo: actual.correo,
-    rol: actual.rol,
+    rol: 'jugador',
     nombre: actual.nombre,
     nacionalidad: actual.nacionalidad,
     genero: actual.genero,
     fechaNacimiento: actual.fechaNacimiento ?? undefined,
-  }
-  next()
-}
-
-export function soloAdmin(req: Request, res: Response, next: NextFunction) {
-  if (req.usuario?.rol !== 'administrador') {
-    res.status(403).json({ error: 'Solo el administrador puede ver esto.' })
-    return
   }
   next()
 }

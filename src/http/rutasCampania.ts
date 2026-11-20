@@ -30,7 +30,7 @@ router.get('/', async (req, res) => {
     usuario: {
       id: req.usuario!.sub,
       correo: req.usuario!.correo,
-      rol: req.usuario!.rol,
+      rol: 'jugador',
       nombre: campania.displayName,
     },
     campania,
@@ -77,7 +77,7 @@ router.post('/rondas', async (req, res) => {
       parsed.data.fase,
       parsed.data.modo,
       parsed.data.runId,
-      req.usuario!.rol === 'administrador' ? 10 : campania.highestUnlocked,
+      campania.highestUnlocked,
     )
     res.status(201).json({ ronda })
   } catch (error) {

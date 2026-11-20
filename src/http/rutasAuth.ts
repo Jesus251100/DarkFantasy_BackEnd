@@ -42,13 +42,11 @@ const registroSchema = z.object({
   nacionalidad: z.string().trim().regex(/^[A-Za-z]{2}$/),
   genero: z.enum(['M', 'F']),
   fechaNacimiento: z.string().trim().min(10),
-  rol: z.enum(['jugador', 'administrador']).optional(),
 })
 
 const loginSchema = z.object({
   correo: correoSchema,
   clave: z.string().min(1).max(128),
-  rol: z.enum(['jugador', 'administrador']).optional(),
 })
 
 const googleSchema = z.object({
@@ -98,7 +96,6 @@ function leerFecha(texto: string): Date | null {
 function datosPublicos(usuario: {
   id: string
   correo: string
-  rol: string
   nombre: string
   nacionalidad: string | null
   genero: string | null
@@ -108,7 +105,7 @@ function datosPublicos(usuario: {
   return {
     id: usuario.id,
     correo: usuario.correo,
-    rol: usuario.rol,
+    rol: 'jugador',
     nombre: usuario.nombre,
     nacionalidad: usuario.nacionalidad,
     genero: usuario.genero,
@@ -229,7 +226,7 @@ router.post('/register', limitarPeticiones('auth:register', 5, 15 * 60 * 1000), 
   const token = firmarToken({
     sub: usuario.id,
     correo: usuario.correo,
-    rol: usuario.rol as 'jugador' | 'administrador',
+    rol: 'jugador',
     nombre: usuario.nombre,
     nacionalidad: usuario.nacionalidad ?? undefined,
     genero: usuario.genero ?? undefined,
@@ -314,7 +311,7 @@ router.post('/google', limitarPeticiones('auth:google', 10, 15 * 60 * 1000), asy
     const token = firmarToken({
       sub: usuario.id,
       correo: usuario.correo,
-      rol: usuario.rol as 'jugador' | 'administrador',
+      rol: 'jugador',
       nombre: usuario.nombre,
       nacionalidad: usuario.nacionalidad ?? undefined,
       genero: usuario.genero ?? undefined,
@@ -340,14 +337,10 @@ router.post('/login', limitarPeticiones('auth:login', 10, 15 * 60 * 1000), async
     res.status(401).json({ error: 'Correo o contraseña incorrectos.' })
     return
   }
-  if (parsed.data.rol && parsed.data.rol !== usuario.rol) {
-    res.status(403).json({ error: `Esta cuenta es de ${usuario.rol}, no de ${parsed.data.rol}.` })
-    return
-  }
   const token = firmarToken({
     sub: usuario.id,
     correo: usuario.correo,
-    rol: usuario.rol as 'jugador' | 'administrador',
+    rol: 'jugador',
     nombre: usuario.nombre,
     nacionalidad: usuario.nacionalidad ?? undefined,
     genero: usuario.genero ?? undefined,
@@ -477,7 +470,7 @@ router.patch('/perfil', authObligatoria, async (req, res) => {
   const token = firmarToken({
     sub: usuario.id,
     correo: usuario.correo,
-    rol: usuario.rol as 'jugador' | 'administrador',
+    rol: 'jugador',
     nombre: usuario.nombre,
     nacionalidad: usuario.nacionalidad ?? undefined,
     genero: usuario.genero ?? undefined,
