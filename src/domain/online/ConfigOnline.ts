@@ -8,11 +8,12 @@ export interface MesaElegida {
   cupo: CupoMesa
 }
 
-/** Acepta solo las mesas del juego: PvP de 2, o mesa y equipos de 4, 6 u 8. */
+/** Acepta PvP de 2, equipos 2 vs 2 o mesas estándar de 4, 6 u 8. */
 export function mesaValida(modo: unknown, cupo: unknown): MesaElegida | null {
   const tamaño = Number(cupo)
   if (modo === 'pvp' && tamaño === 2) return { modo: 'pvp', cupo: 2 }
-  if ((modo === 'mesa' || modo === 'equipos') && (tamaño === 4 || tamaño === 6 || tamaño === 8)) {
+  if (modo === 'equipos' && tamaño === 4) return { modo, cupo: 4 }
+  if (modo === 'mesa' && (tamaño === 4 || tamaño === 6 || tamaño === 8)) {
     return { modo, cupo: tamaño }
   }
   return null
@@ -65,7 +66,7 @@ export const CONFIG_ONLINE: ConfigOnline = {
 }
 
 export function configPara(mesa: MesaElegida, base: ConfigOnline = CONFIG_ONLINE): ConfigOnline {
-  return { ...base, maxPlayers: mesa.cupo, minPlayers: 2 }
+  return { ...base, maxPlayers: mesa.modo === 'equipos' ? 4 : mesa.cupo, minPlayers: 2 }
 }
 
 export const MENSAJE_SIN_JUGADORES = 'No hay suficientes jugadores para iniciar'

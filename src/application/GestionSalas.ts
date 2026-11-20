@@ -42,6 +42,7 @@ export interface OyenteSalas {
   onRechazo(socketId: string, mensaje: string): void
   /** Aviso a los jugadores en cola (p. ej. no hay suficientes jugadores). */
   onAlertaCola(humanos: MiembroCola[], mensaje: string): void
+  onActividad(usuarioId: string, salaId: string, socketId: string, evento: 'aviso' | 'regreso' | 'expulsion', nombre: string): void
 }
 
 /**
@@ -49,6 +50,9 @@ export interface OyenteSalas {
  * No conoce socket.io: la infraestructura implementa `OyenteSalas`.
  */
 export class GestionSalas {
+  private readonly actividad = new Map<string, { aviso: ReturnType<typeof setTimeout>; expulsion: ReturnType<typeof setTimeout>; avisado: boolean }>()
+  private readonly avisoInactividadMs = 60_000
+  private readonly expulsionInactividadMs = 120_000
   private readonly cola = new Map<string, TicketCola>()
   private readonly salas = new Map<string, SalaOnline>()
   private readonly salaDeUsuario = new Map<string, string>()
@@ -100,11 +104,69 @@ export class GestionSalas {
     if (!sala) return null
     this.cancelarTimerDesconexion(usuarioId)
     sala.marcarConectado(usuarioId, socketId)
+    this.registrarActividad(usuarioId, sala.id)
     this.reanudarSiSePuede(sala)
     return sala
   }
 
+  registrarActividad(usuarioId: string, salaId?: string): void {
+    const idSala = salaId ?? this.salaDeUsuario.get(usuarioId)
+    const sala = idSala ? this.salas.get(idSala) : undefined
+    const jugador = sala?.jugadores.find((item) => item.id === usuarioId && !item.esBot)
+    if (!sala || !jugador || sala.estadoActual !== 'playing' || !jugador.conectado || !jugador.socketId) return
+    const previo = this.actividad.get(usuarioId)
+    if (previo) {
+      clearTimeout(previo.aviso)
+      clearTimeout(previo.expulsion)
+      if (previo.avisado) this.oyente.onActividad(usuarioId, sala.id, jugador.socketId, 'regreso', jugador.nombre)
+    }
+    const seguimiento = { aviso: undefined as unknown as ReturnType<typeof setTimeout>, expulsion: undefined as unknown as ReturnType<typeof setTimeout>, avisado: false }
+    seguimiento.aviso = setTimeout(() => {
+      if (this.actividad.get(usuarioId) !== seguimiento) return
+      seguimiento.avisado = true
+      this.oyente.onActividad(usuarioId, sala.id, jugador.socketId!, 'aviso', jugador.nombre)
+    }, this.avisoInactividadMs)
+    seguimiento.expulsion = setTimeout(() => {
+      if (this.actividad.get(usuarioId) !== seguimiento) return
+      this.actividad.delete(usuarioId)
+      const actual = this.salas.get(sala.id)
+      const persona = actual?.jugadores.find((item) => item.id === usuarioId && !item.esBot)
+      if (!actual || !persona || actual.estadoActual !== 'playing') return
+      this.oyente.onActividad(usuarioId, actual.id, persona.socketId ?? '', 'expulsion', persona.nombre)
+      this.cancelarTimerDesconexion(usuarioId)
+      if (actual.personalizada && actual.anfitrionId === usuarioId) {
+        this.oyente.onAbandono(usuarioId, actual.id)
+        actual.cierrePorAnfitrion = true
+        this.terminar(actual, null)
+        return
+      }
+      this.oyente.onAbandono(usuarioId, actual.id)
+      actual.expulsarJugador(usuarioId)
+      this.salaDeUsuario.delete(usuarioId)
+      if (actual.modo === 'pvp') {
+        const superviviente = actual.jugadores.find((jugador) => !jugador.esBot && jugador.conectado)
+        if (superviviente) {
+          this.terminar(actual, superviviente.id)
+          return
+        }
+      }
+      this.onEstadoDeSala(actual)
+      if (actual.humanosConectados === 0 && !this.tieneDesconexionPendiente(actual)) this.terminar(actual, null)
+      else this.reanudarSiSePuede(actual)
+    }, this.expulsionInactividadMs)
+    this.actividad.set(usuarioId, seguimiento)
+  }
+
+  private limpiarActividad(usuarioId: string): void {
+    const previo = this.actividad.get(usuarioId)
+    if (!previo) return
+    clearTimeout(previo.aviso)
+    clearTimeout(previo.expulsion)
+    this.actividad.delete(usuarioId)
+  }
+
   desconectar(usuarioId: string, socketId: string): SalaOnline | null {
+    this.limpiarActividad(usuarioId)
     const miembroCola = this.cola.get(usuarioId)
     if (miembroCola?.socketId === socketId) {
       this.programarTimerDesconexion(usuarioId, () => {
@@ -190,11 +252,20 @@ export class GestionSalas {
     apuesta = 0,
     radarPermitido = false,
     chatCanal?: string,
+    anfitrionId?: string,
   ): void {
     const vivos = miembros.filter((m) => m.usuarioId && m.socketId)
     if (vivos.length === 0) return
     for (const miembro of vivos) this.abandonar(miembro.usuarioId)
-    this.crearSala(vivos, rellenarConBots, mesa, apuesta, radarPermitido, false, chatCanal)
+    this.crearSala(vivos, rellenarConBots, mesa, apuesta, radarPermitido, false, chatCanal, anfitrionId)
+  }
+
+  cerrarPorAbandonoAnfitrion(salaId: string, usuarioId: string): boolean {
+    const sala = this.salas.get(salaId)
+    if (!sala || !sala.personalizada || sala.anfitrionId !== usuarioId || sala.estadoActual !== 'playing') return false
+    sala.cierrePorAnfitrion = true
+    this.terminar(sala, null)
+    return true
   }
 
   iniciarSalaPendienteApuesta(salaId: string, apuestas: Record<string, number>): boolean {
@@ -205,6 +276,7 @@ export class GestionSalas {
     if (ids.length !== apostadores.length || ids.some((id, i) => id !== apostadores[i])) return false
     sala.apuestas = { ...apuestas }
     sala.iniciar()
+    this.iniciarSeguimientoActividad(sala)
     const humanos = sala.humanos().map((jugador) => ({
       usuarioId: jugador.id, nombre: jugador.nombre, avatarUrl: jugador.avatarUrl, socketId: jugador.socketId ?? '',
     }))
@@ -264,13 +336,13 @@ export class GestionSalas {
     }
     for (const [clave, timer] of this.timersRelleno) {
       const mesa = activos.get(clave)
-      if (!mesa || mesa.modo === 'pvp' || this.grupo(mesa).length === 0 || this.grupo(mesa).length >= mesa.cupo) {
+      if (!mesa || mesa.modo === 'pvp' || mesa.modo === 'equipos' || this.grupo(mesa).length === 0 || this.grupo(mesa).length >= mesa.cupo) {
         clearTimeout(timer)
         this.timersRelleno.delete(clave)
       }
     }
     for (const [clave, mesa] of activos) {
-      if (mesa.modo === 'pvp' || this.grupo(mesa).length === 0 || this.grupo(mesa).length >= mesa.cupo || this.timersRelleno.has(clave)) continue
+      if (mesa.modo === 'pvp' || mesa.modo === 'equipos' || this.grupo(mesa).length === 0 || this.grupo(mesa).length >= mesa.cupo || this.timersRelleno.has(clave)) continue
       this.timersRelleno.set(clave, setTimeout(() => this.rellenarGrupo(mesa), this.config.fillWithBotsAfterMs))
     }
   }
@@ -281,7 +353,7 @@ export class GestionSalas {
     if (timer) clearTimeout(timer)
     this.timersRelleno.delete(clave)
     const esperando = this.grupo(mesa)
-    if (mesa.modo === 'pvp' || esperando.length === 0 || esperando.length >= mesa.cupo) {
+    if (mesa.modo === 'pvp' || mesa.modo === 'equipos' || esperando.length === 0 || esperando.length >= mesa.cupo) {
       this.revisarTimers()
       return
     }
@@ -303,9 +375,10 @@ export class GestionSalas {
     radarPermitido = true,
     esperarApuesta = false,
     chatCanal?: string,
+    anfitrionId?: string,
   ): void {
     if (humanos.length === 0) return
-    const sala = new SalaOnline(randomUUID(), configPara(mesa, this.config), mesa.modo, chatCanal)
+    const sala = new SalaOnline(randomUUID(), configPara(mesa, this.config), mesa.modo, chatCanal, anfitrionId ?? null, !!anfitrionId)
     sala.fijarApuesta(apuesta)
     sala.apuestas = Object.fromEntries(humanos.filter((h) => apuesta > 0).map((h) => [h.usuarioId, apuesta]))
     sala.programarRadar(radarPermitido)
@@ -325,6 +398,7 @@ export class GestionSalas {
     sala.sellarEquipos()
     this.salas.set(sala.id, sala)
     if (!esperarApuesta) sala.iniciar()
+    if (!esperarApuesta) this.iniciarSeguimientoActividad(sala)
     this.oyente.onEmparejar(sala, humanos)
     if (!esperarApuesta) this.programarCanto(sala, sala.config.revealDelayMs)
   }
@@ -339,6 +413,14 @@ export class GestionSalas {
     this.deadlineCanto.set(sala.id, Date.now() + esperaMs)
   }
 
+  private iniciarSeguimientoActividad(sala: SalaOnline): void {
+    for (const humano of sala.humanos()) this.registrarActividad(humano.id, sala.id)
+  }
+
+  private onEstadoDeSala(sala: SalaOnline): void {
+    this.oyente.onEstado(sala)
+  }
+
   private cantar(sala: SalaOnline): void {
     if (sala.estadoActual !== 'playing' || this.salasPausadas.has(sala.id) || this.rondaEnPausa.has(sala.id)) return
     const numero = sala.cantar()
@@ -350,7 +432,7 @@ export class GestionSalas {
     if (contacto) this.oyente.onRadar(sala, contacto)
     this.oyente.onCantar(sala, numero)
     this.reaccionBots(sala)
-    this.programarCanto(sala, sala.config.drawIntervalMs)
+    this.programarCanto(sala, sala.velocidadBolasMs)
   }
 
   private reaccionBots(sala: SalaOnline): void {
@@ -373,8 +455,7 @@ export class GestionSalas {
   }
 
   /**
-   * En equipos una ronda ganada suma un punto. A 2 puntos, o al cerrar la tercera, termina la serie.
-   * Mientras tanto se muestran el marcador y, unos segundos después, cartones nuevos.
+   * En equipos se juegan siempre las tres rondas; la pausa permite ajustar apuestas y mostrar el marcador.
    */
   private resolverRonda(sala: SalaOnline, ganadorId: string | null): void {
     if (sala.estadoActual === 'finished' || this.rondaEnPausa.has(sala.id)) return
@@ -391,14 +472,19 @@ export class GestionSalas {
       return
     }
     this.oyente.onEstado(sala)
-    const timer = setTimeout(() => {
+    const avanzar = () => {
+      if (!this.salas.has(sala.id) || sala.estadoActual !== 'playing') return
+      if (sala.tieneAumentosPendientes) {
+        this.timerRonda.set(sala.id, setTimeout(avanzar, 300))
+        return
+      }
       this.timerRonda.delete(sala.id)
       this.rondaEnPausa.delete(sala.id)
-      if (!this.salas.has(sala.id) || sala.estadoActual !== 'playing') return
       sala.abrirSiguienteRonda()
       this.oyente.onEstado(sala)
       this.programarCanto(sala, 4000)
-    }, 4500)
+    }
+    const timer = setTimeout(avanzar, 15_000)
     this.timerRonda.set(sala.id, timer)
   }
 
@@ -422,17 +508,23 @@ export class GestionSalas {
     this.detenerCanto(sala)
     this.cancelarRonda(sala.id)
     this.salasPausadas.delete(sala.id)
-    const ganador = sala.jugadores.find((j) => j.id === ganadorId) ?? null
-    sala.finalizar(ganadorId)
-    this.oyente.onTerminar(sala, ganadorId)
+    const equipoGanador = sala.serie?.equipoGanador ?? null
+    const ganadorFinalId = sala.modo === 'equipos'
+      ? sala.jugadores.find((j) => j.equipo === equipoGanador && !j.esBot)?.id
+        ?? sala.jugadores.find((j) => j.equipo === equipoGanador)?.id
+        ?? null
+      : ganadorId
+    const ganador = sala.jugadores.find((j) => j.id === ganadorFinalId) ?? null
+    sala.finalizar(ganadorFinalId)
+    this.oyente.onTerminar(sala, ganadorFinalId)
 
     const serie = sala.serie
     const resultado: ResultadoOnline = {
       salaId: sala.id,
       size: sala.config.size,
-      winModes: [sala.metodoVictoria],
-      ganadorId,
-      ganadorNombre: serie?.equipoGanador ? `Equipo ${serie.equipoGanador}` : ganador?.nombre ?? null,
+      winModes: sala.modosJugados,
+      ganadorId: ganadorFinalId,
+      ganadorNombre: serie?.equipoGanador ? sala.nombreEquipo(serie.equipoGanador) : ganador?.nombre ?? null,
       duracionSeg: sala.duracionSeg,
       apuestas: { ...sala.apuestas },
       jugadores: sala.jugadores.map((j) => ({
@@ -456,6 +548,9 @@ export class GestionSalas {
       })
 
     for (const humano of sala.humanos()) {
+      const actividad = this.actividad.get(humano.id)
+      if (actividad) { clearTimeout(actividad.aviso); clearTimeout(actividad.expulsion) }
+      this.actividad.delete(humano.id)
       this.salaDeUsuario.delete(humano.id)
       this.cancelarTimerDesconexion(humano.id)
     }
@@ -489,6 +584,12 @@ export class GestionSalas {
     const sala = salaId ? this.salas.get(salaId) : undefined
     const jugador = sala?.jugadores.find((item) => item.id === usuarioId)
     if (!sala || !jugador || jugador.socketId !== socketId) return
+    if (sala.personalizada && sala.anfitrionId === usuarioId && sala.estadoActual === 'playing') {
+      this.oyente.onAbandono(usuarioId, sala.id)
+      sala.cierrePorAnfitrion = true
+      this.terminar(sala, null)
+      return
+    }
     if (sala.estadoActual === 'playing') this.oyente.onAbandono(usuarioId, sala.id)
     if (jugador.conectado) sala.marcarDesconectado(usuarioId)
     this.salaDeUsuario.delete(usuarioId)

@@ -22,6 +22,7 @@ export interface ResultadoOnline {
 /** Puerto de persistencia de partidas online. */
 export interface IRegistroPartidasOnline {
   cobrarApuestas(salaId: string, apuestas: Record<string, number>): Promise<void>
+  cobrarAumentoApuesta(salaId: string, ronda: number, apuestas: Record<string, number>): Promise<void>
   registrar(resultado: ResultadoOnline): Promise<{ recompensaMonedas: number }>
   penalizarAbandono(usuarioId: string, salaId: string): Promise<void>
   obtenerPuntosRanking(usuarioId: string): Promise<number>

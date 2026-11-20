@@ -21,6 +21,7 @@ import {
 } from './RadarSala'
 
 export type EstadoSala = 'waiting' | 'playing' | 'finished'
+const LIMITE_APUESTA_SERIE = 6000
 
 export interface EfectoActivo {
   tipo: TipoEfectoBooster
@@ -102,6 +103,15 @@ export interface VistaSala {
     equipo2: number
     aviso: string | null
     equipoGanador: 1 | 2 | null
+    fase: 'jugando' | 'intermedio'
+    venceIntermedio: number | null
+    nombres: { equipo1: string; equipo2: string }
+    ganadoresRonda: (1 | 2 | null)[]
+    pozo: number
+    apuestas: Record<string, number>
+    combo: { equipo1: number; equipo2: number }
+    evento: string | null
+    aumentaron: string[]
   } | null
   /** El sorteo del radar dio que sí. El localizador no se puede usar en esta partida. */
   radarProgramado: boolean
@@ -112,18 +122,29 @@ export interface VistaSala {
 /** Una sala de bingo online: estado puro, sin socket ni temporizadores. */
 export class SalaOnline {
   readonly jugadores: JugadorSala[] = []
-  readonly metodoVictoria: WinMode
+  metodoVictoria: WinMode
   readonly fondoNivel: number
-  private readonly patrones: IPatronVictoria[]
+  private patrones: IPatronVictoria[]
   private oraculo: Oraculo
+  private readonly metodosRonda: WinMode[] = []
   private estado: EstadoSala = 'waiting'
   private ganadorId: string | null = null
   private rondaActual = 1
   private readonly puntosEquipo = { 1: 0, 2: 0 }
+  private readonly ganadoresRonda: (1 | 2 | null)[] = []
+  private readonly comboEquipo = { 1: 0, 2: 0 }
+  private bolasOleada = 0
+  private eventoActual: string | null = null
+  private eventoHasta: number | null = null
   private avisoRonda: string | null = null
   private equipoGanadorSerie: 1 | 2 | null = null
+  private faseSerie: 'jugando' | 'intermedio' = 'jugando'
+  private venceIntermedio: number | null = null
   private apuestaMonto = 0
+  cierrePorAnfitrion = false
   apuestas: Record<string, number> = {}
+  private readonly aumentosPendientes = new Set<string>()
+  private readonly aumentosAplicados = new Set<string>()
   private radarProgramado = false
   private radarMostrado = false
   private readonly avanceRatio = new Map<string, number>()
@@ -137,9 +158,12 @@ export class SalaOnline {
     readonly config: ConfigOnline,
     readonly modo: ModoMesa = 'mesa',
     readonly chatCanal = `partida:${id}`,
+    readonly anfitrionId: string | null = null,
+    readonly personalizada = false,
   ) {
     this.metodoVictoria =
       config.winModes[Math.floor(Math.random() * config.winModes.length)] ?? 'row'
+    this.metodosRonda.push(this.metodoVictoria)
     this.fondoNivel = 1 + Math.floor(Math.random() * 9)
     this.patrones = patronesDesdeModos([this.metodoVictoria])
     this.oraculo = Oraculo.nuevo(config.maxNumber)
@@ -151,6 +175,10 @@ export class SalaOnline {
 
   get ganador(): string | null {
     return this.ganadorId
+  }
+
+  get modosJugados(): WinMode[] {
+    return [...this.metodosRonda]
   }
 
   get cantidad(): number {
@@ -208,10 +236,17 @@ export class SalaOnline {
 
   liderRadar(): ContactoRadar | null {
     const bolaActual = this.oraculo.lista.length
-    const candidatos = this.jugadores.map((jugador, asiento) => {
+    const vistos = new Set<string>()
+    const candidatos = this.jugadores.filter((jugador) => {
+      if (this.modo !== 'equipos' || !jugador.equipo) return true
+      const clave = `equipo:${jugador.equipo}`
+      if (vistos.has(clave)) return false
+      vistos.add(clave)
+      return true
+    }).map((jugador, asiento) => {
       const medida = this.medir(jugador)
       return {
-        nombre: jugador.nombre,
+        nombre: this.modo === 'equipos' && jugador.equipo ? this.nombreEquipo(jugador.equipo) : jugador.nombre,
         asiento,
         hechas: medida.hechas,
         total: medida.total,
@@ -230,6 +265,15 @@ export class SalaOnline {
       equipo2: this.puntosEquipo[2],
       aviso: this.avisoRonda,
       equipoGanador: this.equipoGanadorSerie,
+      fase: this.faseSerie,
+      venceIntermedio: this.venceIntermedio,
+      nombres: { equipo1: 'Luna Carmesí', equipo2: 'Legión Umbría' },
+      ganadoresRonda: [...this.ganadoresRonda],
+      pozo: Object.values(this.apuestas).reduce((total, monto) => total + monto, 0),
+      apuestas: { ...this.apuestas },
+      combo: { equipo1: this.comboEquipo[1], equipo2: this.comboEquipo[2] },
+      evento: this.eventoActual,
+      aumentaron: this.jugadores.filter((jugador) => this.aumentosAplicados.has(`${this.rondaActual}:${jugador.id}`)).map((jugador) => jugador.id),
     }
   }
 
@@ -243,13 +287,19 @@ export class SalaOnline {
     const equipo = ganador?.equipo
     if (equipo === 1 || equipo === 2) {
       this.puntosEquipo[equipo] += 1
-      this.avisoRonda = `${ganador?.nombre ?? 'Un rival'} le dio la ronda ${this.rondaActual} al equipo ${equipo}`
+      this.avisoRonda = `${ganador?.nombre ?? 'Un rival'} ganó la ronda ${this.rondaActual} para ${this.nombreEquipo(equipo)}`
     } else {
       this.avisoRonda = `La ronda ${this.rondaActual} quedó sin ganador`
     }
-    const hayCampeon = this.puntosEquipo[1] >= 2 || this.puntosEquipo[2] >= 2
-    const serieCerrada = hayCampeon || this.rondaActual >= 3
-    if (!serieCerrada) return true
+    this.ganadoresRonda.push(equipo === 1 || equipo === 2 ? equipo : null)
+    const serieCerrada = this.rondaActual >= 3
+    if (!serieCerrada) {
+      this.faseSerie = 'intermedio'
+      this.venceIntermedio = Date.now() + 15_000
+      return true
+    }
+    this.faseSerie = 'intermedio'
+    this.venceIntermedio = null
     if (this.puntosEquipo[1] !== this.puntosEquipo[2]) {
       this.equipoGanadorSerie = this.puntosEquipo[1] > this.puntosEquipo[2] ? 1 : 2
     }
@@ -260,13 +310,44 @@ export class SalaOnline {
   abrirSiguienteRonda(): void {
     if (this.modo !== 'equipos' || this.estado !== 'playing') return
     this.rondaActual += 1
+    this.faseSerie = 'jugando'
+    this.venceIntermedio = null
     this.avisoRonda = null
     this.ganadorId = null
     this.oraculo = Oraculo.nuevo(this.config.maxNumber)
+    this.metodoVictoria = this.elegirMetodoVictoria()
+    this.patrones = patronesDesdeModos([this.metodoVictoria])
+    this.metodosRonda.push(this.metodoVictoria)
+    this.aumentosAplicados.clear()
+    this.aumentosPendientes.clear()
+    this.comboEquipo[1] = 0
+    this.comboEquipo[2] = 0
+    this.bolasOleada = 0
+    this.eventoActual = null
+    this.eventoHasta = null
+    this.radarMostrado = false
+    const cartonesEquipo = {
+      1: Carton.aleatorio(this.config.size, this.config.maxNumber),
+      2: Carton.aleatorio(this.config.size, this.config.maxNumber),
+    }
     for (const jugador of this.jugadores) {
-      jugador.carton = Carton.aleatorio(this.config.size, this.config.maxNumber)
+      jugador.carton = jugador.equipo ? cartonesEquipo[jugador.equipo] : Carton.aleatorio(this.config.size, this.config.maxNumber)
       jugador.ganador = false
       jugador.efectos = {}
+    }
+    const equipoRemontada = this.puntosEquipo[1] < this.puntosEquipo[2] ? 1 : this.puntosEquipo[2] < this.puntosEquipo[1] ? 2 : null
+    if (equipoRemontada) {
+      const hasta = Date.now() + 12_000
+      for (const jugador of this.jugadores.filter((miembro) => miembro.equipo === equipoRemontada)) {
+        jugador.efectos.shield = {
+          tipo: 'shield',
+          hasta,
+          lanzadoPorId: 'sistema',
+          lanzadoPorNombre: 'Sello de Remontada',
+        }
+      }
+      this.eventoActual = `${this.nombreEquipo(equipoRemontada)} recibe un Sello de Remontada`
+      this.eventoHasta = hasta
     }
     this.avanceRatio.clear()
     this.avanceBola.clear()
@@ -291,6 +372,15 @@ export class SalaOnline {
     this.oraculo = Oraculo.nuevo(this.config.maxNumber)
     this.estado = 'playing'
     this.iniciadaEn = Date.now()
+    if (this.modo === 'equipos') {
+      const cartonesEquipo = {
+        1: Carton.aleatorio(this.config.size, this.config.maxNumber),
+        2: Carton.aleatorio(this.config.size, this.config.maxNumber),
+      }
+      for (const jugador of this.jugadores) {
+        if (jugador.equipo) jugador.carton = cartonesEquipo[jugador.equipo]
+      }
+    }
     this.avanceRatio.clear()
     this.avanceBola.clear()
     this.anotarAvance()
@@ -301,58 +391,127 @@ export class SalaOnline {
    * Devuelve las casillas marcadas, o null si la jugada no vale.
    */
   fijarMarca(usuarioId: string, indice: number, activa: boolean): number[] | null {
-    if (this.modo !== 'pvp' || this.estado !== 'playing') return null
+    if (this.estado !== 'playing' || this.faseSerie === 'intermedio') return null
     const jugador = this.jugadores.find((item) => item.id === usuarioId && !item.esBot)
     const celda = jugador?.carton.celdaEn(indice)
     if (!jugador || !celda || celda.libre) return null
+    const efectoHielo = this.modo === 'equipos'
+      ? this.jugadores.some((miembro) => miembro.equipo === jugador.equipo && miembro.efectos.freeze && miembro.efectos.freeze.hasta > Date.now())
+      : !!jugador.efectos.freeze && jugador.efectos.freeze.hasta > Date.now()
+    const efectoSabotaje = this.modo === 'equipos'
+      ? this.jugadores.find((miembro) => miembro.equipo === jugador.equipo)?.efectos.sabotage
+      : jugador.efectos.sabotage
+    if (efectoHielo || (activa && efectoSabotaje?.casillasBloqueadas?.includes(indice))) return null
+    const estabaMarcada = celda.estaMarcada
     if (celda.estaMarcada !== activa) {
       const aceptada = jugador.carton.toggleCelda(indice, this.oraculo.conjunto)
       if (!aceptada) return null
     }
+    if (this.modo === 'equipos' && jugador.equipo) {
+      this.comboEquipo[jugador.equipo] = activa && !estabaMarcada ? this.comboEquipo[jugador.equipo] + 1 : 0
+    }
     return jugador.carton.toSnapshot().flatMap((item, i) => (item.marked && !item.free ? [i] : []))
   }
 
-  /** En equipos, la primera mitad de los asientos es el bando 1 y la otra el bando 2. */
+  /** Asigna los asientos de forma alternada y mantiene los equipos equilibrados. */
   sellarEquipos(): void {
     if (this.modo !== 'equipos') return
-    const mitad = this.config.maxPlayers / 2
-    this.jugadores.forEach((jugador, indice) => {
-      jugador.equipo = indice < mitad ? 1 : 2
-    })
+    const conteo = { 1: 0, 2: 0 }
+    for (const jugador of this.jugadores) {
+      const equipo: 1 | 2 = conteo[1] <= conteo[2] ? 1 : 2
+      jugador.equipo = equipo
+      conteo[equipo] += 1
+    }
+    const cartonesEquipo = {
+      1: Carton.aleatorio(this.config.size, this.config.maxNumber),
+      2: Carton.aleatorio(this.config.size, this.config.maxNumber),
+    }
+    for (const jugador of this.jugadores) {
+      if (jugador.equipo) jugador.carton = cartonesEquipo[jugador.equipo]
+    }
+  }
+
+  iniciarAumentoApuesta(usuarioId: string, monto: number): boolean {
+    if (this.modo !== 'equipos' || this.estado !== 'playing' || this.faseSerie !== 'intermedio' || this.rondaActual >= 3) return false
+    if (!Number.isInteger(monto) || monto < 200 || monto > 2000) return false
+    const jugador = this.jugadores.find((item) => item.id === usuarioId && !item.esBot)
+    const clave = `${this.rondaActual}:${usuarioId}`
+    if (!jugador || (this.apuestas[usuarioId] ?? this.apuestaMonto) + monto > LIMITE_APUESTA_SERIE || this.aumentosAplicados.has(clave) || this.aumentosPendientes.has(clave)) return false
+    this.aumentosPendientes.add(clave)
+    return true
+  }
+
+  confirmarAumentoApuesta(usuarioId: string, monto: number): void {
+    const clave = `${this.rondaActual}:${usuarioId}`
+    this.aumentosPendientes.delete(clave)
+    this.aumentosAplicados.add(clave)
+    this.apuestas[usuarioId] = (this.apuestas[usuarioId] ?? 0) + monto
+  }
+
+  cancelarAumentoApuesta(usuarioId: string): void {
+    this.aumentosPendientes.delete(`${this.rondaActual}:${usuarioId}`)
+  }
+
+  get tieneAumentosPendientes(): boolean {
+    return this.aumentosPendientes.size > 0
+  }
+
+  get velocidadBolasMs(): number {
+    if (this.modo !== 'equipos') return this.config.drawIntervalMs
+    if (this.bolasOleada > 0) return 900
+    return Math.max(1500, this.config.drawIntervalMs - (this.rondaActual - 1) * 600)
   }
 
   cantar(): number | null {
-    if (this.estado !== 'playing') return null
+    if (this.estado !== 'playing' || this.faseSerie === 'intermedio') return null
     if (!this.oraculo.quedanBolas()) return null
+    if (this.eventoHasta !== null && this.eventoHasta <= Date.now()) {
+      this.eventoActual = null
+      this.eventoHasta = null
+    }
     this.limpiarEfectos(Date.now())
     const preferidos = this.numerosEnCartonesConEfecto('luck')
     const evitados = this.numerosEnCartonesConEfecto('sabotage')
     const numero = preferidos.length || evitados.length
       ? this.oraculo.cantarConPreferencias(preferidos, evitados, 0.7)
       : this.oraculo.cantar()
+    if (this.modo === 'equipos') {
+      if (this.oraculo.lista.length === 5) {
+        this.bolasOleada = 3
+        this.eventoActual = 'Oleada del Oráculo: las próximas bolas caerán a mayor ritmo'
+        this.eventoHasta = null
+      } else if (this.bolasOleada > 0) {
+        this.bolasOleada -= 1
+        if (this.bolasOleada === 0) {
+          this.eventoActual = null
+          this.eventoHasta = null
+        }
+      }
+    }
     this.anotarAvance()
     return numero
   }
 
   /** Validación autoritativa: ¿completó algún patrón con las bolas cantadas? */
   reclamar(jugadorId: string): WinResult | null {
-    if (this.estado !== 'playing') return null
+    if (this.estado !== 'playing' || this.faseSerie === 'intermedio') return null
     const jugador = this.jugadores.find((j) => j.id === jugadorId)
     if (!jugador) return null
-    if (jugador.efectos.freeze && jugador.efectos.freeze.hasta > Date.now()) return null
+    if (this.estaCongelado(jugador)) return null
     return this.victoriaPermitida(jugador)
   }
 
   botCompleta(jugadorId: string): boolean {
+    if (this.faseSerie === 'intermedio') return false
     const jugador = this.jugadores.find((j) => j.id === jugadorId)
     if (!jugador) return false
-    if (jugador.efectos.freeze && jugador.efectos.freeze.hasta > Date.now()) return false
+    if (this.estaCongelado(jugador)) return false
     return this.victoriaPermitida(jugador).won
   }
 
   /** Valida el lanzamiento y aplica el efecto (el escudo es autoritativo aquí). */
   lanzarBooster(lanzadorId: string, objetivoId: string, boosterId: number): ResultadoLanzamiento {
-    if (this.estado !== 'playing') {
+    if (this.estado !== 'playing' || this.faseSerie === 'intermedio') {
       return { ok: false, error: 'La partida no está en curso.' }
     }
     const lanzador = this.jugadores.find((j) => j.id === lanzadorId)
@@ -371,13 +530,18 @@ export class SalaOnline {
     if (rechazo) {
       return { ok: false, error: rechazo }
     }
+    if (this.modo === 'equipos' && BOOSTERS_OFENSIVOS.has(boosterId) && lanzador.equipo === objetivo.equipo) {
+      return { ok: false, error: 'Los ataques solo pueden afectar al equipo contrario.' }
+    }
 
     const ahora = Date.now()
     this.limpiarEfectos(ahora)
 
-    const escudo = objetivo.efectos.shield
-    const bloqueadoPorEscudo =
-      BOOSTERS_OFENSIVOS.has(boosterId) && !!escudo && escudo.hasta > ahora
+    const afectados = this.modo === 'equipos' && objetivo.equipo
+      ? this.jugadores.filter((jugador) => jugador.equipo === objetivo.equipo)
+      : [objetivo]
+    const tieneEscudo = afectados.some((jugador) => !!jugador.efectos.shield && jugador.efectos.shield.hasta > ahora)
+    const bloqueadoPorEscudo = BOOSTERS_OFENSIVOS.has(boosterId) && tieneEscudo
 
     let casillasBloqueadas: number[] | undefined
     let numerosFalsos: Record<string, number> | undefined
@@ -391,13 +555,15 @@ export class SalaOnline {
           numerosFalsos[String(indice)] = 1 + Math.floor(Math.random() * this.config.maxNumber)
         }
       }
-      objetivo.efectos[definicion.tipo] = {
-        tipo: definicion.tipo,
-        hasta: ahora + definicion.duracionMs,
-        lanzadoPorId: lanzador.id,
-        lanzadoPorNombre: lanzador.nombre,
-        ...(casillasBloqueadas ? { casillasBloqueadas } : {}),
-        ...(numerosFalsos ? { numerosFalsos } : {}),
+      for (const miembro of afectados) {
+        miembro.efectos[definicion.tipo] = {
+          tipo: definicion.tipo,
+          hasta: ahora + definicion.duracionMs,
+          lanzadoPorId: lanzador.id,
+          lanzadoPorNombre: lanzador.nombre,
+          ...(casillasBloqueadas ? { casillasBloqueadas } : {}),
+          ...(numerosFalsos ? { numerosFalsos } : {}),
+        }
       }
     }
 
@@ -439,7 +605,10 @@ export class SalaOnline {
 
   private victoriaPermitida(jugador: JugadorSala): WinResult {
     const cantadas = this.oraculo.conjunto
-    const bloqueadas = new Set(jugador.efectos.sabotage?.casillasBloqueadas ?? [])
+    const compañero = this.modo === 'equipos'
+      ? this.jugadores.find((miembro) => miembro.id !== jugador.id && miembro.equipo === jugador.equipo)
+      : undefined
+    const bloqueadas = new Set(jugador.efectos.sabotage?.casillasBloqueadas ?? compañero?.efectos.sabotage?.casillasBloqueadas ?? [])
     for (const patron of this.patrones) {
       for (const indices of patron.indices(jugador.carton.tamano)) {
         if (indices.some((indice) => bloqueadas.has(indice))) continue
@@ -449,6 +618,24 @@ export class SalaOnline {
       }
     }
     return { won: false, winningIndices: [], reason: 'no-line' }
+  }
+
+  private estaCongelado(jugador: JugadorSala): boolean {
+    const equipo = this.modo === 'equipos' ? jugador.equipo : undefined
+    return this.jugadores.some((miembro) =>
+      (miembro.id === jugador.id || (!!equipo && miembro.equipo === equipo))
+      && !!miembro.efectos.freeze && miembro.efectos.freeze.hasta > Date.now(),
+    )
+  }
+
+  nombreEquipo(equipo: 1 | 2): string {
+    return equipo === 1 ? 'Luna Carmesí' : 'Legión Umbría'
+  }
+
+  private elegirMetodoVictoria(): WinMode {
+    const opciones = this.config.winModes.filter((modo) => modo !== this.metodoVictoria)
+    const disponibles = opciones.length ? opciones : this.config.winModes
+    return disponibles[Math.floor(Math.random() * disponibles.length)] ?? 'row'
   }
 
   private efectosDe(jugador: JugadorSala, ahora: number): EfectoBoosterVista[] {
@@ -485,6 +672,13 @@ export class SalaOnline {
     if (!jugador || jugador.esBot) return
     jugador.socketId = socketId
     jugador.conectado = true
+  }
+
+  expulsarJugador(jugadorId: string): boolean {
+    const indice = this.jugadores.findIndex((jugador) => jugador.id === jugadorId && !jugador.esBot)
+    if (indice < 0) return false
+    this.jugadores.splice(indice, 1)
+    return true
   }
 
   humanos(): JugadorSala[] {

@@ -1,13 +1,11 @@
 import type { Server as HttpServer } from 'node:http'
 import jwt from 'jsonwebtoken'
 import { Server } from 'socket.io'
-import { CazaDragones, PREMIOS_CAZA, type Cazador, type OyenteCaza } from '../application/CazaDragones'
 import { GestionSalas, type MiembroCola, type OyenteSalas } from '../application/GestionSalas'
 import type { SalaOnline } from '../domain/online/SalaOnline'
 import { prisma } from '../infrastructure/prisma'
 import { PrismaPartidasOnlineRepo } from '../infrastructure/PrismaPartidasOnlineRepo'
 import { otorgarLogro } from '../infrastructure/otorgarLogro'
-import { pagarDiamantesCaza, pagarExperienciaCaza } from '../infrastructure/PrismaRecompensaCaza'
 import type { JwtPayload } from './auth'
 import { origenPermitido } from './seguridad'
 import { RECARGA_BOOSTER_MS, rechazoDeObjetivo } from '../domain/online/efectosBooster'
@@ -21,6 +19,12 @@ function leerMesa(payload: { modo?: unknown; cupo?: unknown } | undefined): Mesa
   return mesaValida(payload.modo, payload.cupo)
 }
 const PUNTOS_POR_VICTORIA = 25
+const CORREOS_CUENTAS_PRUEBA = new Set([
+  'jugador@darkfantasy.local',
+  'jugador@darkfantasy.com',
+  'admin@darkfantasy.local',
+  'admin@darkfantasy.com',
+])
 
 function secreto(): string {
   const value = process.env.JWT_SECRET?.trim()
@@ -45,6 +49,15 @@ export function montarOnline(servidor: HttpServer): Server {
 
   const sesiones = new Map<string, Sesion>()
   const recargasBooster = new Map<string, number>()
+  const ultimoEventoUsuario = new Map<string, number>()
+  const permitirAccion = (socketId: string, accion: string, intervaloMs: number): boolean => {
+    const clave = `${socketId}:${accion}`
+    const ahora = Date.now()
+    const previo = ultimoEventoUsuario.get(clave) ?? 0
+    if (ahora - previo < intervaloMs) return false
+    ultimoEventoUsuario.set(clave, ahora)
+    return true
+  }
   const apuestasPendientes = new Map<string, { montos: Map<string, number>; timer: ReturnType<typeof setTimeout>; venceEn: number; cobrando: boolean }>()
 
   const emitirVista = (usuarioId: string, socketId: string, sala: SalaOnline, evento: string) => {
@@ -106,7 +119,7 @@ export function montarOnline(servidor: HttpServer): Server {
       })()
     },
     onCantar(sala, numero) {
-      io.to(sala.id).emit('ball:called', { salaId: sala.id, numero })
+      io.to(sala.id).emit('ball:called', { salaId: sala.id, numero, evento: sala.serie?.evento ?? null })
     },
     onRadar(sala, contacto) {
       io.to(sala.id).emit('radar:evento', contacto)
@@ -118,6 +131,16 @@ export function montarOnline(servidor: HttpServer): Server {
     },
     onTerminar(sala, ganadorId) {
       const ganador = sala.jugadores.find((j) => j.id === ganadorId) ?? null
+      const ganadores = sala.jugadores.filter((jugador) => jugador.ganador && !jugador.esBot)
+      const pozo = Object.values(sala.apuestas).reduce((total, monto) => total + monto, 0)
+      const pozoPorGanador: Record<string, number> = {}
+      if (ganadores.length) {
+        const parte = Math.floor(pozo / ganadores.length)
+        let sobrante = pozo - parte * ganadores.length
+        for (const jugador of [...ganadores].sort((a, b) => a.id.localeCompare(b.id))) {
+          pozoPorGanador[jugador.id] = parte + (sobrante-- > 0 ? 1 : 0)
+        }
+      }
       for (const humano of sala.humanos()) {
         if (humano.socketId) {
           emitirVista(humano.id, humano.socketId, sala, 'game:over')
@@ -126,10 +149,13 @@ export function montarOnline(servidor: HttpServer): Server {
       io.to(sala.id).emit('game:summary', {
         salaId: sala.id,
         ganadorId,
-        ganadorNombre: ganador?.nombre ?? null,
-        pozo: Object.values(sala.apuestas).reduce((total, monto) => total + monto, 0),
-        pozoPagado: !!ganador && !ganador.esBot,
-        diamantesPremio: ganador && !ganador.esBot ? 1 : 0,
+        ganadorNombre: sala.serie?.equipoGanador ? sala.nombreEquipo(sala.serie.equipoGanador) : ganador?.nombre ?? null,
+        equipoGanador: sala.serie?.equipoGanador ?? null,
+        pozo,
+        pozoPorGanador,
+        pozoPagado: ganadores.length > 0,
+        diamantesPremio: ganadores.length,
+        anfitrionAbandono: sala.cierrePorAnfitrion,
       })
       io.in(sala.id).socketsLeave(sala.id)
     },
@@ -165,6 +191,15 @@ export function montarOnline(servidor: HttpServer): Server {
     onAlertaCola(humanos, mensaje) {
       for (const humano of humanos) {
         io.to(humano.socketId).emit('queue:warning', { mensaje })
+      }
+    },
+    onActividad(usuarioId, salaId, socketId, evento, nombre) {
+      if (evento === 'aviso') io.to(socketId).emit('game:afk-warning', { segundos: 60 })
+      if (evento === 'regreso') io.to(socketId).emit('game:afk-resumed')
+      if (evento === 'expulsion') {
+        io.to(salaId).emit('game:afk-player', { usuarioId, nombre })
+        io.to(socketId).emit('game:afk-removed', { salaId, nombre })
+        io.sockets.sockets.get(socketId)?.leave(salaId)
       }
     },
   }
@@ -205,6 +240,7 @@ export function montarOnline(servidor: HttpServer): Server {
       return
     }
     sala.anotarEspera(usuarioId, ESPERA_LOCALIZADOR)
+    gestion.registrarActividad(usuarioId, sala.id)
     const contacto = sala.liderRadar()
     socket.emit('radar:resultado', {
       nombre: contacto?.nombre ?? 'Nadie',
@@ -219,63 +255,6 @@ export function montarOnline(servidor: HttpServer): Server {
     }
   }
 
-  const avisarRuleta = async (cazadores: Cazador[], diamantes: number) => {
-    const pagado = await pagarDiamantesCaza(
-      cazadores.map((cazador) => cazador.usuarioId),
-      diamantes,
-    )
-    const premio = {
-      diamantes,
-      pagado,
-      opciones: PREMIOS_CAZA.map((premioCaza) => ({
-        diamantes: premioCaza.diamantes,
-        peso: premioCaza.peso,
-      })),
-    }
-    for (const cazador of cazadores) {
-      io.to(cazador.socketId).emit('dragon:ruleta', premio)
-    }
-  }
-
-  const oyenteCaza: OyenteCaza = {
-    onEspera(socketId, esperando) {
-      io.to(socketId).emit('dragon:esperando', { esperando })
-    },
-    onInicio(caceriaId, cazadores) {
-      for (const cazador of cazadores) {
-        const rival = cazadores.find((otro) => otro.usuarioId !== cazador.usuarioId)
-        io.to(cazador.socketId).emit('dragon:inicio', {
-          id: caceriaId,
-          rival: rival?.nombre ?? 'Cazador',
-        })
-      }
-    },
-    onEstado(cazador, vista) {
-      io.to(cazador.socketId).emit('dragon:estado', vista)
-    },
-    onBola(_caceriaId, numero, cazadores) {
-      for (const cazador of cazadores) {
-        io.to(cazador.socketId).emit('dragon:bola', { numero })
-      }
-    },
-    onRechazo(socketId, mensaje) {
-      io.to(socketId).emit('dragon:rechazo', { mensaje })
-    },
-    onVictoria(_caceriaId, cazadores, diamantes) {
-      void avisarRuleta(cazadores, diamantes)
-    },
-    onDerrota(_caceriaId, cazadores, mensaje) {
-      void pagarExperienciaCaza(cazadores.map((cazador) => cazador.usuarioId), 25).then((pagada) => {
-        for (const cazador of cazadores) {
-          io.to(cazador.socketId).emit('dragon:fin', { resultado: 'derrota', mensaje, xp: pagada ? 25 : 0 })
-          io.to(cazador.socketId).emit('profile:refresh')
-        }
-      })
-    },
-  }
-
-  const caza = new CazaDragones(oyenteCaza)
-
   interface Espera {
     codigo: string
     anfitrionId: string
@@ -289,8 +268,6 @@ export function montarOnline(servidor: HttpServer): Server {
 
   const esperas = new Map<string, Espera>()
   const esperaDe = new Map<string, string>()
-  const salasCaza = new Map<string, Espera>()
-  const cazaDe = new Map<string, string>()
   const temporizadoresSala = new Map<string, ReturnType<typeof setTimeout>>()
 
   const cancelarTemporizadorSala = (usuarioId: string) => {
@@ -308,11 +285,6 @@ export function montarOnline(servidor: HttpServer): Server {
       if (espera?.miembros.some((miembro) => miembro.usuarioId === usuarioId && miembro.socketId === socketId)) {
         salirEspera(usuarioId)
       }
-      const codigoCaza = cazaDe.get(usuarioId)
-      const salaCaza = codigoCaza ? salasCaza.get(codigoCaza) : undefined
-      if (salaCaza?.miembros.some((miembro) => miembro.usuarioId === usuarioId && miembro.socketId === socketId)) {
-        salirSalaCaza(usuarioId)
-      }
     }, CONFIG_ONLINE.reconnectGraceMs)
     temporizadoresSala.set(usuarioId, timer)
   }
@@ -323,7 +295,7 @@ export function montarOnline(servidor: HttpServer): Server {
     for (let i = 0; i < 4; i += 1) {
       codigo += alfabeto[Math.floor(Math.random() * alfabeto.length)]
     }
-    return esperas.has(codigo) || salasCaza.has(codigo) ? codigoNuevo() : codigo
+    return esperas.has(codigo) ? codigoNuevo() : codigo
   }
 
   const vistaEspera = (espera: Espera) => ({
@@ -365,31 +337,6 @@ export function montarOnline(servidor: HttpServer): Server {
       espera.anfitrionId = espera.miembros[0]?.usuarioId ?? espera.anfitrionId
     }
     emitirEspera(espera)
-  }
-
-  const emitirSalaCaza = (sala: Espera) => {
-    const vista = vistaEspera(sala)
-    for (const miembro of sala.miembros) {
-      io.to(miembro.socketId).emit('dragon:sala', vista)
-    }
-  }
-
-  const salirSalaCaza = (usuarioId: string) => {
-    cancelarTemporizadorSala(usuarioId)
-    const codigo = cazaDe.get(usuarioId)
-    if (!codigo) return
-    const sala = salasCaza.get(codigo)
-    cazaDe.delete(usuarioId)
-    if (!sala) return
-    sala.miembros = sala.miembros.filter((miembro) => miembro.usuarioId !== usuarioId)
-    if (sala.miembros.length === 0) {
-      salasCaza.delete(codigo)
-      return
-    }
-    if (sala.anfitrionId === usuarioId) {
-      sala.anfitrionId = sala.miembros[0]?.usuarioId ?? sala.anfitrionId
-    }
-    emitirSalaCaza(sala)
   }
 
   const miembroDe = (socketId: string, sesionActual: Sesion): MiembroCola => ({
@@ -438,17 +385,6 @@ export function montarOnline(servidor: HttpServer): Server {
       emitirEspera(salaEspera)
     }
 
-    const codigoCaza = cazaDe.get(sesion.usuarioId)
-    if (codigoCaza) {
-      const salaCaza = salasCaza.get(codigoCaza)
-      const miembroCaza = salaCaza?.miembros.find((item) => item.usuarioId === sesion.usuarioId)
-      if (salaCaza && miembroCaza) {
-        cancelarTemporizadorSala(sesion.usuarioId)
-        miembroCaza.socketId = socket.id
-        emitirSalaCaza(salaCaza)
-      }
-    }
-
     if (gestion.reconectarCola(sesion.usuarioId, socket.id)) {
       socket.emit('queue:joined', { usuarioId: sesion.usuarioId, reconectada: true })
     }
@@ -482,6 +418,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('chat:send', (payload: { texto?: string }) => {
+      if (!permitirAccion(socket.id, 'chat:send', 800)) return
       const texto = String(payload?.texto ?? '').trim().slice(0, 80)
       if (!texto) return
       const mensaje = {
@@ -532,6 +469,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('room:create', (payload?: { modo?: unknown; cupo?: unknown; radar?: unknown; apuesta?: unknown }) => {
+      if (!permitirAccion(socket.id, 'room:create', 1000)) return
       const montoApuesta = Number(payload?.apuesta ?? 200)
       if (!Number.isInteger(montoApuesta) || montoApuesta < 200 || montoApuesta > 2000) {
         socket.emit('room:error', { mensaje: 'La apuesta debe estar entre 200 y 2.000 monedas.' })
@@ -544,9 +482,7 @@ export function montarOnline(servidor: HttpServer): Server {
       }
       gestion.salirCola(sesion.usuarioId)
       gestion.abandonar(sesion.usuarioId)
-      caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
       const espera: Espera = {
         codigo: codigoNuevo(),
         anfitrionId: sesion.usuarioId,
@@ -563,6 +499,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('room:join', (payload: { codigo?: string }) => {
+      if (!permitirAccion(socket.id, 'room:join', 500)) return
       const codigo = String(payload?.codigo ?? '').trim().toUpperCase()
       const partidaActual = gestion.salaDe(sesion.usuarioId)
       if (partidaActual) {
@@ -588,9 +525,7 @@ export function montarOnline(servidor: HttpServer): Server {
       }
       gestion.salirCola(sesion.usuarioId)
       gestion.abandonar(sesion.usuarioId)
-      caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
       espera.miembros.push(miembroDe(socket.id, sesion))
       esperaDe.set(sesion.usuarioId, espera.codigo)
       emitirEspera(espera)
@@ -602,6 +537,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('room:bots', (payload: { habilitado?: boolean }) => {
+      if (!permitirAccion(socket.id, 'room:bots', 300)) return
       const codigo = esperaDe.get(sesion.usuarioId)
       const espera = codigo ? esperas.get(codigo) : undefined
       if (!espera || espera.anfitrionId !== sesion.usuarioId) {
@@ -613,6 +549,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('room:apuesta', (payload: { monto?: number }) => {
+      if (!permitirAccion(socket.id, 'room:apuesta', 500)) return
       void (async () => {
         const codigo = esperaDe.get(sesion.usuarioId)
         const espera = codigo ? esperas.get(codigo) : undefined
@@ -633,6 +570,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('room:start', (payload?: { modo?: 'sala' | 'bots' }) => {
+      if (!permitirAccion(socket.id, 'room:start', 1000)) return
       void (async () => {
       const codigo = esperaDe.get(sesion.usuarioId)
       const espera = codigo ? esperas.get(codigo) : undefined
@@ -647,11 +585,15 @@ export function montarOnline(servidor: HttpServer): Server {
         socket.emit('room:error', { mensaje: 'El duelo no admite rivales invocados.' })
         return
       }
+      if (arranque === 'bots' && !espera.completarConBots) {
+        socket.emit('room:error', { mensaje: 'Activa el relleno con bots antes de iniciar.' })
+        return
+      }
       if (arranque === 'bots' && espera.miembros.length >= espera.cupo) {
         socket.emit('room:error', { mensaje: 'La sala ya está llena. Empieza con los jugadores que están dentro.' })
         return
       }
-      const minimoSala = espera.modo === 'pvp' ? 2 : Math.ceil(espera.cupo / 2)
+      const minimoSala = espera.modo === 'pvp' || espera.modo === 'equipos' ? 2 : Math.ceil(espera.cupo / 2)
       if (arranque === 'sala' && espera.miembros.length < minimoSala) {
         socket.emit('room:error', { mensaje: `Se necesitan al menos ${minimoSala} jugadores para iniciar esta sala.` })
         return
@@ -675,7 +617,7 @@ export function montarOnline(servidor: HttpServer): Server {
         esperaDe.delete(miembro.usuarioId)
         cancelarTemporizadorSala(miembro.usuarioId)
       }
-      gestion.iniciarSala(miembros, arranque === 'bots', mesa, apuesta, espera.radar, `sala:${espera.codigo}`)
+      gestion.iniciarSala(miembros, arranque === 'bots', mesa, apuesta, espera.radar, `sala:${espera.codigo}`, espera.anfitrionId)
       for (const miembro of miembros) {
         if (!io.sockets.sockets.has(miembro.socketId)) gestion.desconectar(miembro.usuarioId, miembro.socketId)
       }
@@ -696,13 +638,15 @@ export function montarOnline(servidor: HttpServer): Server {
           return
         }
         const correspondePenalizacion = sala?.estadoActual === 'playing'
+        const anfitrionAbandonaSala = !!sala?.personalizada && sala.anfitrionId === sesion.usuarioId
         try {
           if (sala && correspondePenalizacion) await repo.penalizarAbandono(sesion.usuarioId, sala.id)
         } catch (error) {
           const mensaje = error instanceof Error ? error.message : 'error desconocido'
           console.error(`No se pudo registrar la penalización por abandono: ${mensaje}`)
         } finally {
-          gestion.abandonar(sesion.usuarioId)
+          if (sala && anfitrionAbandonaSala) gestion.cerrarPorAbandonoAnfitrion(sala.id, sesion.usuarioId)
+          else gestion.abandonar(sesion.usuarioId)
           if (typeof ack === 'function') ack()
           void repo.obtenerPuntosRanking(sesion.usuarioId)
             .then((puntos) => socket.emit('ranking:perfil', { puntos }))
@@ -714,6 +658,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('booster:lanzar', (payload: { boosterId?: number; objetivoId?: string }) => {
+      if (!permitirAccion(socket.id, 'booster:lanzar', 350)) return
       void (async () => {
       try {
       const sala = gestion.salaDe(sesion.usuarioId)
@@ -756,6 +701,7 @@ export function montarOnline(servidor: HttpServer): Server {
         socket.emit('booster:rechazo', { mensaje: resultado.error ?? 'Lanzamiento no válido.' })
         return
       }
+      gestion.registrarActividad(sesion.usuarioId, sala.id)
       const perfilesConLogro = new Set<string>()
       const registrarLogroSeguro = async (usuarioId: string, logro: string) => {
         try {
@@ -798,14 +744,13 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('queue:join', (payload?: { modo?: unknown; cupo?: unknown }) => {
+      if (!permitirAccion(socket.id, 'queue:join', 800)) return
       const mesa = leerMesa(payload)
       if (!mesa) {
         socket.emit('queue:warning', { mensaje: 'Esa mesa no existe. Elige 4, 6, 8, PvP o equipos.' })
         return
       }
-      caza.salir(sesion.usuarioId)
       salirEspera(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
       const miembro: MiembroCola = {
         usuarioId: sesion.usuarioId,
         nombre: sesion.nombre,
@@ -822,6 +767,7 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('betting:confirm', (payload: { salaId?: string; monto?: number }) => {
+      if (!permitirAccion(socket.id, 'betting:confirm', 500)) return
       const salaId = String(payload?.salaId ?? '')
       const sala = gestion.salaDe(sesion.usuarioId)
       const pendiente = apuestasPendientes.get(salaId)
@@ -857,116 +803,58 @@ export function montarOnline(servidor: HttpServer): Server {
     })
 
     socket.on('pvp:marcar', (payload: { indice?: number; activa?: boolean }) => {
+      if (!permitirAccion(socket.id, 'pvp:marcar', 220)) return
       const sala = gestion.salaDe(sesion.usuarioId)
       if (!sala) return
       const indice = Number(payload?.indice)
       if (!Number.isInteger(indice)) return
       const marcas = sala.fijarMarca(sesion.usuarioId, indice, payload?.activa === true)
       if (!marcas) return
-      io.to(sala.id).emit('pvp:marcas', { jugadorId: sesion.usuarioId, marcas })
+      gestion.registrarActividad(sesion.usuarioId, sala.id)
+      if (sala.modo === 'pvp') {
+        io.to(sala.id).emit('pvp:marcas', { jugadorId: sesion.usuarioId, marcas })
+      } else if (sala.modo === 'equipos') {
+        const equipo = sala.jugadores.find((jugador) => jugador.id === sesion.usuarioId)?.equipo
+        for (const compañero of sala.humanos().filter((jugador) => jugador.equipo === equipo && jugador.conectado && jugador.socketId)) {
+          emitirVista(compañero.id, compañero.socketId!, sala, 'room:state')
+        }
+      } else {
+        emitirVista(sesion.usuarioId, socket.id, sala, 'room:state')
+      }
+    })
+
+    socket.on('team:bet:raise', (payload: { monto?: number }) => {
+      if (!permitirAccion(socket.id, 'team:bet:raise', 500)) return
+      const sala = gestion.salaDe(sesion.usuarioId)
+      const monto = Number(payload?.monto)
+      if (!sala || !sala.iniciarAumentoApuesta(sesion.usuarioId, monto)) {
+        socket.emit('team:bet:error', { mensaje: 'No puedes aumentar la apuesta en este momento o ya la aumentaste esta ronda.' })
+        return
+      }
+      void repo.cobrarAumentoApuesta(sala.id, sala.serie?.ronda ?? 0, { [sesion.usuarioId]: monto })
+        .then(() => {
+          sala.confirmarAumentoApuesta(sesion.usuarioId, monto)
+          refrescarPerfil(sesion.usuarioId)
+          for (const humano of sala.humanos()) {
+            if (humano.conectado && humano.socketId) emitirVista(humano.id, humano.socketId, sala, 'room:state')
+          }
+        })
+        .catch((error: unknown) => {
+          sala.cancelarAumentoApuesta(sesion.usuarioId)
+          socket.emit('team:bet:error', { mensaje: error instanceof Error ? error.message : 'No se pudo aumentar la apuesta.' })
+        })
     })
 
     socket.on('game:claim', () => {
+      if (!permitirAccion(socket.id, 'game:claim', 800)) return
+      gestion.registrarActividad(sesion.usuarioId)
       gestion.reclamarBingo(sesion.usuarioId)
-    })
-
-    socket.on('dragon:create', () => {
-      gestion.salirCola(sesion.usuarioId)
-      gestion.abandonar(sesion.usuarioId)
-      salirEspera(sesion.usuarioId)
-      caza.salir(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
-      const sala: Espera = {
-        codigo: codigoNuevo(),
-        anfitrionId: sesion.usuarioId,
-        miembros: [miembroDe(socket.id, sesion)],
-        completarConBots: false,
-        modo: 'mesa',
-        cupo: 4,
-        apuesta: 0,
-        radar: false,
-      }
-      salasCaza.set(sala.codigo, sala)
-      cazaDe.set(sesion.usuarioId, sala.codigo)
-      emitirSalaCaza(sala)
-    })
-
-    socket.on('dragon:code', (payload: { codigo?: string }) => {
-      const codigo = String(payload?.codigo ?? '').trim().toUpperCase()
-      const sala = salasCaza.get(codigo)
-      if (!sala) {
-        socket.emit('dragon:error', { mensaje: 'Esa sala no existe.' })
-        return
-      }
-      const ya = sala.miembros.find((miembro) => miembro.usuarioId === sesion.usuarioId)
-      if (ya) {
-        ya.socketId = socket.id
-        emitirSalaCaza(sala)
-        return
-      }
-      if (sala.miembros.length >= 2) {
-        socket.emit('dragon:error', { mensaje: 'La sala ya está llena.' })
-        return
-      }
-      gestion.salirCola(sesion.usuarioId)
-      gestion.abandonar(sesion.usuarioId)
-      salirEspera(sesion.usuarioId)
-      caza.salir(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
-      sala.miembros.push(miembroDe(socket.id, sesion))
-      cazaDe.set(sesion.usuarioId, sala.codigo)
-      emitirSalaCaza(sala)
-    })
-
-    socket.on('dragon:room-leave', () => {
-      salirSalaCaza(sesion.usuarioId)
-      socket.emit('dragon:sala-cerrada')
-    })
-
-    socket.on('dragon:start', () => {
-      const codigo = cazaDe.get(sesion.usuarioId)
-      const sala = codigo ? salasCaza.get(codigo) : undefined
-      if (!sala || sala.anfitrionId !== sesion.usuarioId) {
-        socket.emit('dragon:error', { mensaje: 'Solo quien creó la sala puede empezarla.' })
-        return
-      }
-      if (sala.miembros.length < 2) {
-        socket.emit('dragon:error', { mensaje: 'Hace falta que tu amigo se una con el código.' })
-        return
-      }
-      const miembros = sala.miembros.map((miembro) => ({ ...miembro }))
-      salasCaza.delete(sala.codigo)
-      for (const miembro of miembros) {
-        cazaDe.delete(miembro.usuarioId)
-        cancelarTemporizadorSala(miembro.usuarioId)
-      }
-      caza.iniciarCon(miembros)
-    })
-
-    socket.on('dragon:join', () => {
-      gestion.salirCola(sesion.usuarioId)
-      gestion.abandonar(sesion.usuarioId)
-      salirEspera(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
-      caza.entrar(sesion.usuarioId, sesion.nombre, socket.id)
-    })
-
-    socket.on('dragon:leave', () => {
-      caza.salir(sesion.usuarioId)
-      salirSalaCaza(sesion.usuarioId)
-      socket.emit('dragon:left')
-    })
-
-    socket.on('dragon:claim', () => {
-      caza.reclamar(sesion.usuarioId)
     })
 
     socket.on('disconnect', () => {
       sesiones.delete(socket.id)
-      if (esperaDe.has(sesion.usuarioId) || cazaDe.has(sesion.usuarioId)) {
-        programarRetiroSala(sesion.usuarioId, socket.id)
-      }
-      if (!cazaDe.has(sesion.usuarioId)) caza.salir(sesion.usuarioId)
+      for (const clave of ultimoEventoUsuario.keys()) if (clave.startsWith(`${socket.id}:`)) ultimoEventoUsuario.delete(clave)
+      if (esperaDe.has(sesion.usuarioId)) programarRetiroSala(sesion.usuarioId, socket.id)
       const salaDesconectada = gestion.desconectar(sesion.usuarioId, socket.id)
       if (salaDesconectada) {
         io.to(salaDesconectada.id).emit('game:connection-paused', {
@@ -1044,9 +932,11 @@ async function listarRanking(): Promise<
   if (ids.length === 0) return []
   const usuarios = await prisma.usuario.findMany({
     where: { id: { in: ids } },
-    select: { id: true, nombre: true, avatarUrl: true, progreso: { select: { rankingPoints: true } } },
+    select: { id: true, correo: true, nombre: true, avatarUrl: true, progreso: { select: { rankingPoints: true } } },
   })
-  const porId = new Map(usuarios.map((usuario) => [usuario.id, usuario]))
+  const porId = new Map(usuarios
+    .filter((usuario) => !CORREOS_CUENTAS_PRUEBA.has(usuario.correo.trim().toLowerCase()))
+    .map((usuario) => [usuario.id, usuario]))
   const victoriasPorId = new Map(
     victorias.flatMap((grupo) => (grupo.usuarioId ? [[grupo.usuarioId, grupo._count._all] as const] : [])),
   )

@@ -168,7 +168,13 @@ export class PartidasCampania {
       throw Object.assign(new Error('Espera a que el oráculo cante la siguiente bola.'), { status: 429 })
     }
     const numero = ronda.oraculo.cantar()
-    if (numero === null) throw new Error('No quedan bolas por cantar.')
+    if (numero === null) {
+      ronda.estado = 'cerrada'
+      throw Object.assign(new Error('Se agotaron las bolas de esta partida.'), {
+        status: 410,
+        code: 'BOLAS_AGOTADAS',
+      })
+    }
     ronda.ultimaBolaEn = ahora
     return numero
   }

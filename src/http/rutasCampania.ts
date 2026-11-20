@@ -100,6 +100,7 @@ router.post('/rondas/:id/bola', (req, res) => {
   } catch (error) {
     const status = error && typeof error === 'object' && 'status' in error ? Number(error.status) : 409
     res.status(status >= 400 && status < 500 ? status : 409).json({
+      code: error && typeof error === 'object' && 'code' in error ? String(error.code) : undefined,
       error: error instanceof Error ? error.message : 'No se pudo cantar la bola.',
     })
   }
